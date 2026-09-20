@@ -101,7 +101,8 @@ def price_text(item_id):
 
 # ---------------------------------------------------------------- 状態
 def _new_cat():
-    return {"in_yard": False, "toy": "", "time_in_yard": 0, "total_time": 0, "given_treasure": False}
+    return {"in_yard": False, "toy": "", "time_in_yard": 0, "total_time": 0,
+            "given_treasure": False, "met": False}
 
 
 def new_state(now=None):
@@ -218,6 +219,7 @@ def _join(state, cid, toy, events):
     state["occ"][toy].append(cid)
     c["in_yard"] = True
     c["toy"] = toy
+    c["met"] = True
     events.append(("arrive", cid, toy))
     if c["total_time"] > TREASURE_MINUTES and not c["given_treasure"]:
         c["given_treasure"] = True
@@ -420,6 +422,9 @@ def _sanitize(state, raw):
             c["time_in_yard"] = _int(src.get("time_in_yard", 0))
             c["total_time"] = _int(src.get("total_time", 0))
             c["given_treasure"] = bool(src.get("given_treasure", False))
+            # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
+            c["met"] = bool(src.get("met", False)) or c["in_yard"] \
+                or c["total_time"] > 0 or c["given_treasure"]
         cats[cid] = c
     occ = {t: [] for t in yard}
     order = []
