@@ -27,7 +27,8 @@ SAVE_NAME = "save.json"
 HEADER_H = 18
 TAB_Y = 230
 TAB_H = SCREEN_H - TAB_Y
-ROW_H = 16
+ROW_H = FONT_SIZE + 6           # リストの行の高さ(フォントの実寸に合わせる)
+LINE_H = FONT_SIZE + 3          # 複数行テキストの行送り(同上)
 LOG_MAX = 30
 TOAST_FRAMES = 75              # 30fps で約2.5秒
 
@@ -140,6 +141,8 @@ class App:
         self.panel_tw = Typewriter()
         self.panel_key = None                  # 図鑑パネルの再生アニメが必要かの判定用
         self.panel_colors = []
+        self.help_tw = Typewriter()
+        self.help_tw.set_text(self._build_help_text())
         self.modal = None                      # {"text":..., "yes": fn}
         self.hits = []
         self.areas = []
@@ -286,6 +289,15 @@ class App:
             out = lines + out
         return out
 
+    def _build_help_text(self):
+        lines = []
+        for text in HELP_LINES:
+            if text == "":
+                lines.append("")
+            else:
+                lines.extend(self.wrap(text, SCREEN_W - 16))
+        return "\n".join(lines)
+
     def show_toast(self, text, col=C_TEXT):
         self.toast = {"col": col, "frames": TOAST_FRAMES}
         self.toast_tw.set_text("\n".join(self.wrap(text, SCREEN_W - 24)))
@@ -362,12 +374,14 @@ class App:
 
     # ------------------------------------------------------------ 一文字ずつ表示(タイプライター)
     def _typing_active(self):
-        return self._log_typing() or not self.toast_tw.done or not self.panel_tw.done
+        return (self._log_typing() or not self.toast_tw.done
+                or not self.panel_tw.done or not self.help_tw.done)
 
     def _skip_typing(self):
         self._skip_log()
         self.toast_tw.skip()
         self.panel_tw.skip()
+        self.help_tw.skip()
 
     # ------------------------------------------------------------ 更新
     def update(self):
@@ -383,6 +397,8 @@ class App:
         self._advance_log_typing()
         self.toast_tw.update(self._play_type_sound)
         self.panel_tw.update(self._play_type_sound)
+        if self.screen == "help":
+            self.help_tw.update(self._play_type_sound)
         if self.toast:
             if self.toast_tw.done:
                 self.toast["frames"] -= 1
@@ -452,20 +468,20 @@ class App:
     def draw_toast(self):
         col = self.toast["col"]
         total_lines = self.toast_tw.text.split("\n")
-        h = len(total_lines) * 13 + 8
+        h = len(total_lines) * LINE_H + 8
         self.draw_panel(6, HEADER_H + 4, SCREEN_W - 12, h)
         for i, line in enumerate(self.toast_tw.visible.split("\n")):
-            self.tx(12, HEADER_H + 8 + i * 13, line, col)
+            self.tx(12, HEADER_H + 8 + i * LINE_H, line, col)
 
     def draw_modal(self):
         self.hits, self.areas = [], []          # 背後の操作は無効にする
         m = self.modal
         lines = self.wrap(m["text"], 176)
-        h = len(lines) * 13 + 44
+        h = len(lines) * LINE_H + 44
         x, y, w = 24, 90, SCREEN_W - 48
         self.draw_panel(x, y, w, h)
         for i, line in enumerate(lines):
-            self.tx(x + 10, y + 10 + i * 13, line, C_TEXT)
+            self.tx(x + 10, y + 10 + i * LINE_H, line, C_TEXT)
         by = y + h - 26
         self.button(x + 14, by, 80, 18, "はい", self._modal_yes)
         self.button(x + w - 94, by, 80, 18, "いいえ", self._modal_no)
@@ -487,9 +503,11 @@ class App:
             self.tx(8, 22, "エサがありません(もちもの→エサ)", C_BAD)
 
         y = 38
+        yard_bottom = y
         if not s["yard"]:
             for i, line in enumerate(self.wrap("庭にはおもちゃがありません。ショップで買って、もちものから置こう", SCREEN_W - 16)):
-                self.tx(8, y + i * 13, line, C_SUB)
+                self.tx(8, y + i * LINE_H, line, C_SUB)
+                yard_bottom = y + (i + 1) * LINE_H
         for i, toy in enumerate(s["yard"]):
             spec = game.TOYS[toy]
             self.tx(8, y + i * ROW_H, spec["name"], C_TEXT)
@@ -500,17 +518,26 @@ class App:
                 self.tx_right(SCREEN_W - 8, y + i * ROW_H, names, C_ACCENT)
             else:
                 self.tx_right(SCREEN_W - 8, y + i * ROW_H, "(空き)", C_DIM)
+            yard_bottom = y + (i + 1) * ROW_H
 
-        self.tx(8, 138, "できごと", C_SUB)
-        pyxel.line(8, 150 - 2, SCREEN_W - 8, 150 - 2, C_DIM)
-        for i, line in enumerate(self.visible_log(3)):
-            self.tx(10, 152 + i * 13, line, C_TEXT)
+        # 「できごと」見出し→区切り線→ログ、の順に、フォントの実寸に合わせて積み上げる
+        # (ボタン行の上で必ず収まるよう、はみ出したらログの行数を減らす)
+        buttons_y = 194
+        label_y = yard_bottom + 6
+        line_y = label_y + FONT_SIZE + 3
+        log_y = line_y + 5
+        max_log_lines = max(1, (buttons_y - 4 - log_y) // LINE_H)
+
+        self.tx(8, label_y, "できごと", C_SUB)
+        pyxel.line(8, line_y, SCREEN_W - 8, line_y, C_DIM)
+        for i, line in enumerate(self.visible_log(max_log_lines)):
+            self.tx(10, log_y + i * LINE_H, line, C_TEXT)
 
         n_money = len(s["pending_money"])
         n_tre = len(s["pending_treasures"])
-        self.button(8, 194, 118, 20, "さかなを受け取る({0})".format(n_money) if n_money else "さかな なし",
+        self.button(8, buttons_y, 118, 20, "さかなを受け取る({0})".format(n_money) if n_money else "さかな なし",
                     self.do_collect, enabled=bool(n_money))
-        self.button(130, 194, 118, 20, "お宝を受け取る({0})".format(n_tre) if n_tre else "お宝 なし",
+        self.button(130, buttons_y, 118, 20, "お宝を受け取る({0})".format(n_tre) if n_tre else "お宝 なし",
                     self.do_treasures, enabled=bool(n_tre))
 
     def do_collect(self):
@@ -568,21 +595,25 @@ class App:
         self.list_view("shop" + str(self.sub["shop"]), 8, 40, SCREEN_W - 16, 112, len(ids), row)
 
         sel = self.selected["shop"]
-        self.draw_panel(8, 156, SCREEN_W - 16, 68)
+        panel_y = 156
+        panel_h = TAB_Y - 4 - panel_y
+        self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
         if sel:
             it = game.ITEMS[sel]
-            self.tx(14, 160, "{0}  {1}".format(it["name"], game.price_text(sel)), C_ACCENT)
+            self.tx(14, panel_y + 4, "{0}  {1}".format(it["name"], game.price_text(sel)), C_ACCENT)
             info = it["desc"]
             if it["kind"] == "toy" and it["size"] > 1:
                 info += "(庭を{0}マス使う)".format(it["size"])
             if it["kind"] == "food":
                 info += "(約{0}分もつ)".format(it["size"])
-            for i, line in enumerate(self.wrap(info, SCREEN_W - 36)[:3]):
-                self.tx(14, 176 + i * 13, line, C_TEXT)
+            desc_y = panel_y + 4 + LINE_H + 4
+            max_desc_lines = max(1, (panel_h - (desc_y - panel_y)) // LINE_H)
+            for i, line in enumerate(self.wrap(info, SCREEN_W - 36)[:max_desc_lines]):
+                self.tx(14, desc_y + i * LINE_H, line, C_TEXT)
             owned = it["kind"] == "toy" and sel in s["owned_toys"]
-            self.button(SCREEN_W - 66, 158, 52, 16, "買う", self.do_buy, enabled=not owned)
+            self.button(SCREEN_W - 66, panel_y + 2, 52, 16, "買う", self.do_buy, enabled=not owned)
         else:
-            self.tx(14, 164, "商品をタップすると説明が出ます", C_SUB)
+            self.tx(14, panel_y + 8, "商品をタップすると説明が出ます", C_SUB)
 
     def select(self, screen, item_id):
         self.selected[screen] = item_id
@@ -679,13 +710,16 @@ class App:
                 self.tx_right(SCREEN_W - 14, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
             self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
 
-        self.list_view("cats", 8, 38, SCREEN_W - 16, 5 * ROW_H, len(ids), row)
+        list_h = 5 * ROW_H
+        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, len(ids), row)
 
-        self.draw_panel(8, 124, SCREEN_W - 16, 100)
+        panel_y = 38 + list_h + 6
+        panel_h = TAB_Y - 4 - panel_y
+        self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
         sel = self.selected["cats"]
         if not sel:
             self.panel_key = None
-            self.tx(14, 130, "猫をタップしてね", C_SUB)
+            self.tx(14, panel_y + 6, "猫をタップしてね", C_SUB)
             return
 
         c = s["cats"][sel]
@@ -693,10 +727,10 @@ class App:
         if key != self.panel_key:
             self.panel_key = key
             self.panel_colors = self._build_cat_panel(sel)
-        y = 130
+        y = panel_y + 6
         for line, col in zip(self.panel_tw.visible.split("\n"), self.panel_colors):
             self.tx(14, y, line, col)
-            y += 13
+            y += LINE_H
 
     def _build_cat_panel(self, sel):
         """図鑑パネルの表示内容を組み立て、タイプライターにセットする。戻り値は行ごとの色。"""
@@ -704,21 +738,18 @@ class App:
         met = c["met"]
         lines, colors = [], []
 
+        # 見出しの分だけ縦の余裕がないので、空行は入れずに詰めて並べる
         lines.append(spec["name"] if met else "？？？")
         colors.append(C_ACCENT if met else C_DIM)
-        lines.append("")
-        colors.append(C_TEXT)
 
         if met:
-            desc_lines = self.wrap(spec["desc"], SCREEN_W - 36)[:3]
+            desc_lines = self.wrap(spec["desc"], SCREEN_W - 36)[:2]
         else:
-            desc_lines = self.wrap("まだ出会っていない猫。庭に遊びに来ると正体がわかるよ。", SCREEN_W - 36)
+            desc_lines = self.wrap("まだ出会っていない猫。庭に遊びに来ると正体がわかるよ。", SCREEN_W - 36)[:2]
         for line in desc_lines:
             lines.append(line)
             colors.append(C_TEXT)
 
-        lines.append("")
-        colors.append(C_SUB)
         if met:
             now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
             lines.append("いま: " + now)
@@ -726,7 +757,6 @@ class App:
             lines.append("いま: ？？？")
         colors.append(C_SUB)
 
-        lines.append("")
         if met and c["given_treasure"]:
             colors.append(C_ACCENT)
             lines.append("お宝:「{0}」".format(spec["treasure"]))
@@ -742,16 +772,28 @@ class App:
 
     # ---- ヘルプ
     def draw_help(self):
-        y = 24
-        for text in HELP_LINES:
-            for line in self.wrap(text, SCREEN_W - 16):
-                self.tx(8, y, line, C_TEXT)
-                y += 13
-        y += 6
-        if self.save_path:
-            self.tx(8, y, "自動でセーブしています", C_GOOD)
-        else:
-            self.tx(8, y, "この環境ではセーブできません", C_BAD)
+        x, y, w = 8, 24, SCREEN_W - 16
+        avail_h = TAB_Y - 4 - y
+        total_lines = self.help_tw.text.split("\n")
+        footer = "自動でセーブしています" if self.save_path else "この環境ではセーブできません"
+        content_h = len(total_lines) * LINE_H + LINE_H + 6
+
+        maxs = max(0, content_h - avail_h)
+        off = min(max(self.scroll.get("help", 0), 0), maxs)
+        self.scroll["help"] = off
+        self.areas.append(("help", x, y, w, avail_h, maxs))
+
+        pyxel.clip(x, y, w, avail_h)
+        for i, line in enumerate(self.help_tw.visible.split("\n")):
+            self.tx(x, y + i * LINE_H - off, line, C_TEXT)
+        if self.help_tw.done:
+            self.tx(x, y + len(total_lines) * LINE_H + 6 - off, footer, C_GOOD if self.save_path else C_BAD)
+        pyxel.clip()
+
+        if maxs > 0:
+            bar_h = max(8, avail_h * avail_h // content_h)
+            bar_y = y + (avail_h - bar_h) * off // maxs
+            pyxel.rect(x + w - 2, int(bar_y), 2, bar_h, C_DIM)
 
 
 if not os.environ.get("NEKOATSUME_NO_AUTORUN"):   # テストから import するときだけ自動起動を止める
