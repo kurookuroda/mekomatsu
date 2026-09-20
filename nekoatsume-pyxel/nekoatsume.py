@@ -2,10 +2,11 @@
 ねこあつめ Pyxel 版(文字だけの UI)
 
     実行:  pyxel run nekoatsume.py      (または python nekoatsume.py)
-    Web :  https://kitao.github.io/pyxel/wasm/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume
+    Web :  https://kitao.github.io/pyxel/web/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume
 
-操作は「タップ / クリック」が基本。リストはドラッグ(ホイール・↑↓キーも可)でスクロール。
-1〜5 キーで下のタブを切り替えられる。ゲームのルールは game.py にある。
+操作は「タップ / クリック」が基本。リストはドラッグ(ホイール・↑↓キーも可)でスクロールし、右端のバーをつかむと一気に動かせる。
+文章は1文字ずつ出る。枠に収まらないときはページに分かれ、▼ が点滅したらタップ(Enter / Space)で次へ。
+1〜5 キーで下のタブを切り替えられる。ゲームのルールは game.py、アイテムと猫のデータは catalog.py にある。
 """
 
 import os
@@ -31,6 +32,20 @@ ROW_H = FONT_SIZE + 6           # リストの行の高さ(フォントの実寸
 LINE_H = FONT_SIZE + 3          # 複数行テキストの行送り(同上)
 LOG_MAX = 30
 TOAST_FRAMES = 75              # 30fps で約2.5秒
+TOAST_MAX_LINES = 3            # これより長いメッセージは、ページ送りのダイアログで出す
+
+# 文章の枠(ページ送り)まわり
+PAD_X = 6                      # 枠の内側の左右の余白
+PAD_Y = 4                      # 枠の内側の上下の余白
+CURSOR_H = FONT_SIZE           # 枠の下に必ず空ける高さ(ページ番号と「▼」の場所。文章はここに入り込まない)
+MSG_X, MSG_Y, MSG_W, MSG_H = 12, 28, SCREEN_W - 24, 192   # 長いメッセージのダイアログ
+
+# リストのスクロールバー
+BAR_W = 6                      # 見た目の幅
+BAR_HIT_W = 10                 # つかめる幅(右端のこの幅を触るとバーの操作になる)
+ROW_RIGHT = SCREEN_W - 20      # リスト行の右側の文字の右端(バーと重ならない位置)
+
+UNMET_KEY = "?unmet"           # 図鑑の「まだ出会っていない猫」の行
 
 # パレット(Pyxel 標準 16 色)
 C_BG, C_PANEL, C_TEXT, C_SUB, C_DIM = 0, 1, 7, 6, 13
@@ -50,6 +65,9 @@ HELP_LINES = [
     "エサがないと、猫は来ません。",
     "",
     "猫の累計滞在が3000分を超えると、お宝を持ってくることがあります。",
+    "",
+    "文章が長いときは、右下で ▼ が点滅します。画面をタップすると、次のページに進みます。",
+    "猫やアイテムが増えても、リストの右端(バー)をドラッグすれば、すばやく動かせます。",
 ]
 
 
@@ -70,6 +88,8 @@ def event_text(ev):
         return "{0}がお宝を置いていった!".format(game.CATS[ev[1]]["name"])
     if kind == "food_out":
         return "エサがなくなった"
+    if kind == "met":
+        return "{0}と はじめて出会った!".format(game.CATS[ev[1]]["name"])
     return ""
 
 
@@ -122,6 +142,99 @@ class Typewriter:
         return self.text[:self.revealed]
 
 
+class PagedText:
+    """長い文章を、決められた大きさの枠に収まるページに分け、1文字ずつ表示する。
+
+    - 枠の下には、ページ番号と「▼」を出すための余白(CURSOR_H)を必ず空ける。文章が枠の下にはみ出すことはない
+    - 次のページがあるとき、文字を出し終えると「▼」が点滅する。タップ(クリック)かキーで次のページへ進む
+    - 行の位置とページの割り方は set() のときに決まり、key が同じあいだは決め直さない
+      (伏せ字のときも、本当の文と同じ長さで組むので、あとで明かされても位置がずれない)
+    """
+
+    def __init__(self):
+        self.key = None
+        self.group = None
+        self.pages = [[]]          # [[(行, 色), ...], ...]
+        self.page = 0
+        self.tw = Typewriter()
+        self.w = 0
+        self.h = 0
+
+    def set(self, key, blocks, wrap, w, h, group=None):
+        """blocks は [(文章, 色), ...]。w, h は枠の大きさ。group が同じなら、ページと表示済みの状態を引き継ぐ。"""
+        if key == self.key:
+            return
+        keep = group is not None and group == self.group
+        self.key, self.group = key, group
+        self.w, self.h = w, h
+        max_lines = max(1, (h - 2 * PAD_Y - CURSOR_H) // LINE_H)
+        lines = []
+        for text, col in blocks:
+            for line in wrap(text, w - 2 * PAD_X - FONT_SIZE):
+                lines.append((line, col))
+        pages, cur = [], []
+        for item in lines:
+            if len(cur) >= max_lines:
+                pages.append(cur)
+                cur = []
+            if not cur and pages and item[0] == "":       # ページの頭に来た空行は捨てる
+                continue
+            cur.append(item)
+        if cur or not pages:
+            pages.append(cur)
+        self.pages = pages
+        self.page = min(self.page, len(pages) - 1) if keep else 0
+        self._start_page(skip=keep)
+
+    def _start_page(self, skip=False):
+        self.tw.text = None                               # 同じ文でも、最初から出し直す
+        self.tw.set_text("\n".join(line for line, _c in self.pages[self.page]))
+        if skip:
+            self.tw.skip()
+
+    @property
+    def typing(self):
+        return not self.tw.done
+
+    @property
+    def has_next(self):
+        return self.page < len(self.pages) - 1
+
+    def skip(self):
+        self.tw.skip()
+
+    def next_page(self):
+        if self.has_next:
+            self.page += 1
+            self._start_page()
+
+    def advance(self):
+        """タップ・キーで呼ぶ。文字送りの途中なら全部出す。出し終えていれば次のページへ。何かしたら True。"""
+        if not self.tw.done:
+            self.tw.skip()
+            return True
+        if self.has_next:
+            self.next_page()
+            return True
+        return False
+
+    def update(self, on_char=None):
+        self.tw.update(on_char)
+
+    def draw(self, app, x, y):
+        """(x, y) は枠の左上。文字は枠の余白の内側に並べる。"""
+        cols = [c for _line, c in self.pages[self.page]]
+        for i, line in enumerate(self.tw.visible.split("\n")):
+            if i < len(cols):
+                app.tx(x + PAD_X, y + PAD_Y + i * LINE_H, line, cols[i])
+        base = y + self.h - PAD_Y
+        if len(self.pages) > 1:
+            app.tx(x + PAD_X, base - FONT_SIZE, "{0}/{1}".format(self.page + 1, len(self.pages)), C_DIM)
+        if self.tw.done and self.has_next and (pyxel.frame_count // 12) % 2 == 0:
+            cx = x + self.w - PAD_X - 8
+            pyxel.tri(cx, base - 9, cx + 7, base - 9, cx + 3, base - 3, C_ACCENT)   # 逆三角(▼)の点滅
+
+
 class App:
     def __init__(self, run=True):
         pyxel.init(SCREEN_W, SCREEN_H, title="ねこあつめ", fps=30)
@@ -138,15 +251,21 @@ class App:
         self.log_timer = 0
         self.toast = None                      # {"col":..., "frames":...}
         self.toast_tw = Typewriter()
-        self.panel_tw = Typewriter()
-        self.panel_key = None                  # 図鑑パネルの再生アニメが必要かの判定用
-        self.panel_colors = []
-        self.help_tw = Typewriter()
-        self.help_tw.set_text(self._build_help_text())
+        self.cat_pager = PagedText()           # 図鑑の猫のプロフィール
+        self.shop_pager = PagedText()          # ショップの商品説明
+        self.help_pager = PagedText()          # ヘルプ
+        self.message = None                    # 長いメッセージのダイアログ {"pager": PagedText}
+        self.pager_regs = []                   # このフレームに描いたページ送りの枠 [(pager, x, y, w, h)]
         self.modal = None                      # {"text":..., "yes": fn}
         self.hits = []
         self.areas = []
         self.press = None
+        # ショップの表示条件(種別・絞り込み・並べ替え)
+        self.shop_kind = 0
+        self.shop_cat_off = 0                  # 種別タブが多いとき、先頭に出す種別の番号
+        self.shop_filter = 0
+        self.shop_sort = 0
+        self._shop_cache = (None, [])
         self._init_sound()
 
         self._init_save()
@@ -235,11 +354,14 @@ class App:
         return fallback if fallback is not None else s[:max(1, len(s) * max_w // max(1, self.tw(s)) - 1)] + "…"
 
     def wrap(self, s, max_w):
+        """幅 max_w で折り返す。行頭に来てはいけない「。」「、」などは、1文字分だけ行末にぶら下げる。
+        そのため、行の幅は最大で max_w + FONT_SIZE になる(呼ぶ側は、その分の余白を見込んで max_w を決める)。"""
         lines = []
         for para in s.split("\n"):
             line = ""
             for ch in para:
-                if self.tw(line + ch) > max_w and line and ch not in NO_LINE_START:
+                hang = ch in NO_LINE_START and self.tw(line + ch) <= max_w + FONT_SIZE
+                if self.tw(line + ch) > max_w and line and not hang:
                     lines.append(line)
                     line = ch
                 else:
@@ -248,7 +370,7 @@ class App:
         return lines
 
     def add_log(self, text):
-        full = "\n".join(self.wrap(text, SCREEN_W - 20))
+        full = "\n".join(self.wrap(text, SCREEN_W - 32))
         self.log.append({"full": full, "revealed": 0})
         self.log = self.log[-LOG_MAX:]
 
@@ -289,18 +411,25 @@ class App:
             out = lines + out
         return out
 
-    def _build_help_text(self):
-        lines = []
-        for text in HELP_LINES:
-            if text == "":
-                lines.append("")
-            else:
-                lines.extend(self.wrap(text, SCREEN_W - 16))
-        return "\n".join(lines)
-
     def show_toast(self, text, col=C_TEXT):
+        """短い知らせは画面の上にさっと出す。長いときはページ送りのダイアログにする(はみ出さないように)。"""
+        lines = self.wrap(text, SCREEN_W - 36)
+        if len(lines) > TOAST_MAX_LINES:
+            self.show_message(text, col)
+            return
         self.toast = {"col": col, "frames": TOAST_FRAMES}
-        self.toast_tw.set_text("\n".join(self.wrap(text, SCREEN_W - 24)))
+        self.toast_tw.set_text("\n".join(lines))
+
+    def show_message(self, text, col=C_TEXT):
+        """長い文章のダイアログ。ページに分け、▼ が点滅したらタップで進み、最後のページでタップすると閉じる。"""
+        pager = PagedText()
+        pager.set(("msg", text), [(text, col)], self.wrap, MSG_W, MSG_H)
+        self.message = {"pager": pager}
+        self.toast = None
+
+    def _advance_message(self):
+        if not self.message["pager"].advance():
+            self.message = None
 
     # ------------------------------------------------------------ 入力
     def _pointer(self):
@@ -312,8 +441,9 @@ class App:
     def _keys(self):
         """キーボード入力(押した瞬間の集合)。テストでは差し替える。"""
         keys = set()
-        for name in ("KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_UP", "KEY_DOWN"):
-            if pyxel.btnp(getattr(pyxel, name)):
+        for name in ("KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_UP", "KEY_DOWN",
+                     "KEY_PAGEUP", "KEY_PAGEDOWN", "KEY_HOME", "KEY_END", "KEY_RETURN", "KEY_SPACE"):
+            if hasattr(pyxel, name) and pyxel.btnp(getattr(pyxel, name)):
                 keys.add(name)
         return keys
 
@@ -328,14 +458,28 @@ class App:
         key, _ax, _ay, _aw, _ah, maxs = area
         self.scroll[key] = min(max(self.scroll.get(key, 0) + dy, 0), maxs)
 
+    def _drag_bar(self, area, y):
+        """スクロールバーをつかんで動かす(押した位置にバーが来る)。猫や商品が何百あっても、すぐ目的の場所へ行ける。"""
+        key, _ax, ay, _aw, ah, maxs = area
+        total = maxs + ah
+        thumb = max(10, ah * ah // total)
+        ratio = (y - ay - thumb / 2) / max(1, ah - thumb)
+        self.scroll[key] = int(min(max(ratio, 0), 1) * maxs)
+
     def handle_input(self):
         mx, my, pressed, held, released, wheel = self._pointer()
         if pressed:
             area = self._area_at(mx, my)
-            self.press = {"y": my, "area": area, "off": self.scroll.get(area[0], 0) if area else 0, "moved": False}
+            bar = bool(area and area[5] > 0 and mx >= area[1] + area[3] - BAR_HIT_W)
+            self.press = {"y": my, "area": area, "off": self.scroll.get(area[0], 0) if area else 0,
+                          "moved": bar, "bar": bar}
+            if bar:
+                self._drag_bar(area, my)
         elif self.press and held and self.press["area"]:
             p = self.press
-            if p["moved"] or abs(my - p["y"]) > 4:
+            if p["bar"]:
+                self._drag_bar(p["area"], my)
+            elif p["moved"] or abs(my - p["y"]) > 4:
                 p["moved"] = True
                 key, _ax, _ay, _aw, _ah, maxs = p["area"]
                 self.scroll[key] = min(max(p["off"] + p["y"] - my, 0), maxs)
@@ -343,21 +487,53 @@ class App:
             moved = self.press["moved"]
             self.press = None
             if not moved:
-                if self._typing_active():
-                    self._skip_typing()
-                else:
-                    self.tap(mx, my)
+                self._on_tap(mx, my)
         if wheel:
             area = self._area_at(mx, my)
             if area:
                 self._scroll_by(area, -wheel * ROW_H)
 
         keys = self._keys()
+        if self.message:
+            if keys & {"KEY_RETURN", "KEY_SPACE"}:
+                self._advance_message()
+            return
         for i, (name, _label) in enumerate(TABS):
             if "KEY_%d" % (i + 1) in keys:
                 self.goto(name)
-        if self.areas and ("KEY_UP" in keys or "KEY_DOWN" in keys):
-            self._scroll_by(self.areas[0], -ROW_H if "KEY_UP" in keys else ROW_H)
+        if keys & {"KEY_RETURN", "KEY_SPACE"}:
+            self._advance_key()
+        if self.areas:
+            area = self.areas[0]
+            page = max(1, area[4] // ROW_H) * ROW_H
+            for name, dy in (("KEY_UP", -ROW_H), ("KEY_DOWN", ROW_H), ("KEY_PAGEUP", -page),
+                             ("KEY_PAGEDOWN", page), ("KEY_HOME", -10 ** 9), ("KEY_END", 10 ** 9)):
+                if name in keys:
+                    self._scroll_by(area, dy)
+
+    def _on_tap(self, x, y):
+        """タップの振り分け。長いメッセージ > 文字送り中(全部出す) > ページ送りの枠(次のページ) > ふつうのボタン"""
+        if self.message:
+            self._advance_message()
+            return
+        if self._typing_active():
+            self._skip_typing()
+            return
+        for pager, rx, ry, rw, rh in reversed(self.pager_regs):
+            if rx <= x < rx + rw and ry <= y < ry + rh and pager.has_next:
+                pager.next_page()
+                return
+        self.tap(x, y)
+
+    def _advance_key(self):
+        """Enter / Space: タップと同じ(位置は問わない)。"""
+        if self._typing_active():
+            self._skip_typing()
+            return
+        for pager, _x, _y, _w, _h in reversed(self.pager_regs):
+            if pager.has_next:
+                pager.next_page()
+                return
 
     def tap(self, x, y):
         for hx, hy, hw, hh, fn, clip in reversed(self.hits):
@@ -370,18 +546,26 @@ class App:
     def goto(self, name):
         if name != self.screen:
             self.screen = name
-            self.hits, self.areas, self.press = [], [], None
+            self.hits, self.areas, self.pager_regs, self.press = [], [], [], None
+            if name == "help":
+                self.help_pager.key = None          # ヘルプは開くたびに、はじめから読み上げる
 
     # ------------------------------------------------------------ 一文字ずつ表示(タイプライター)
+    def _visible_pagers(self):
+        pagers = [p for p, _x, _y, _w, _h in self.pager_regs]
+        if self.message:
+            pagers.append(self.message["pager"])
+        return pagers
+
     def _typing_active(self):
         return (self._log_typing() or not self.toast_tw.done
-                or not self.panel_tw.done or not self.help_tw.done)
+                or any(p.typing for p in self._visible_pagers()))
 
     def _skip_typing(self):
         self._skip_log()
         self.toast_tw.skip()
-        self.panel_tw.skip()
-        self.help_tw.skip()
+        for p in self._visible_pagers():
+            p.skip()
 
     # ------------------------------------------------------------ 更新
     def update(self):
@@ -389,16 +573,17 @@ class App:
         if rep["ticks"]:
             if rep["ticks"] <= 3:
                 for ev in rep["events"]:
-                    self.add_log(event_text(ev))
+                    text = event_text(ev)
+                    if text:
+                        self.add_log(text)
             else:
                 self.add_log("{0}分たちました。猫が{1}回遊びに来たよ".format(rep["ticks"], rep["visits"]))
             self.save()
         self.handle_input()
         self._advance_log_typing()
         self.toast_tw.update(self._play_type_sound)
-        self.panel_tw.update(self._play_type_sound)
-        if self.screen == "help":
-            self.help_tw.update(self._play_type_sound)
+        for pager in self._visible_pagers():
+            pager.update(self._play_type_sound)
         if self.toast:
             if self.toast_tw.done:
                 self.toast["frames"] -= 1
@@ -419,6 +604,7 @@ class App:
         self.hit(x, y, w, h, fn, clip)
 
     def list_view(self, key, x, y, w, h, n, draw_row):
+        """縦に並べるリスト。見えている行だけ描くので、行が何千あっても軽い。右端のバーはドラッグで動かせる。"""
         maxs = max(0, n * ROW_H - h)
         off = min(max(self.scroll.get(key, 0), 0), maxs)
         self.scroll[key] = off
@@ -429,9 +615,11 @@ class App:
             draw_row(i, y + i * ROW_H - int(off), (x, y, w, h))
         pyxel.clip()
         if maxs > 0:
-            bar_h = max(8, h * h // (n * ROW_H))
+            total = maxs + h
+            bar_h = max(10, h * h // total)
             bar_y = y + (h - bar_h) * off // maxs
-            pyxel.rect(x + w - 2, int(bar_y), 2, bar_h, C_DIM)
+            pyxel.rect(x + w - BAR_W, y, BAR_W, h, C_PANEL)                    # 溝
+            pyxel.rect(x + w - BAR_W, int(bar_y), BAR_W, bar_h, C_DIM)         # つまみ
 
     def draw_panel(self, x, y, w, h):
         pyxel.rect(x, y, w, h, C_PANEL)
@@ -439,7 +627,7 @@ class App:
 
     # ------------------------------------------------------------ 描画
     def draw(self):
-        self.hits, self.areas = [], []
+        self.hits, self.areas, self.pager_regs = [], [], []
         pyxel.cls(C_BG)
         self.draw_header()
         getattr(self, "draw_" + self.screen)()
@@ -448,6 +636,8 @@ class App:
             self.draw_toast()
         if self.modal:
             self.draw_modal()
+        if self.message:
+            self.draw_message()
 
     def draw_header(self):
         s = self.state
@@ -473,10 +663,18 @@ class App:
         for i, line in enumerate(self.toast_tw.visible.split("\n")):
             self.tx(12, HEADER_H + 8 + i * LINE_H, line, col)
 
+    def draw_message(self):
+        self.hits, self.areas, self.pager_regs = [], [], []     # 背後の操作は無効にする
+        self.draw_panel(MSG_X, MSG_Y, MSG_W, MSG_H)
+        pager = self.message["pager"]
+        pager.draw(self, MSG_X, MSG_Y)
+        if pager.tw.done and not pager.has_next:
+            self.tx_right(MSG_X + MSG_W - PAD_X, MSG_Y + MSG_H - PAD_Y - FONT_SIZE, "タップで閉じる", C_DIM)
+
     def draw_modal(self):
-        self.hits, self.areas = [], []          # 背後の操作は無効にする
+        self.hits, self.areas, self.pager_regs = [], [], []     # 背後の操作は無効にする
         m = self.modal
-        lines = self.wrap(m["text"], 176)
+        lines = self.wrap(m["text"], 164)
         h = len(lines) * LINE_H + 44
         x, y, w = 24, 90, SCREEN_W - 48
         self.draw_panel(x, y, w, h)
@@ -558,7 +756,7 @@ class App:
             self.show_toast("受け取れるお宝はありません", C_SUB)
             return
         texts = ["{0}が「{1}」をくれました!".format(game.CATS[c]["name"], game.CATS[c]["treasure"]) for c in got]
-        self.show_toast(" ".join(texts), C_ACCENT)
+        self.show_toast("\n".join(texts), C_ACCENT)
         self.save()
 
     # ---- ショップ
@@ -571,34 +769,95 @@ class App:
         self.scroll.pop(screen, None)
         self.selected[screen] = None
 
+    def arrow_button(self, x, y, w, h, direction, fn, enabled=True):
+        """◀ ▶ のボタン(フォントに依存しないよう、三角を自分で描く)。"""
+        self.button(x, y, w, h, "", fn, enabled=enabled)
+        col = C_TEXT if enabled else C_DIM
+        cx, cy = x + w // 2, y + h // 2
+        if direction < 0:
+            pyxel.tri(cx + 2, cy - 4, cx + 2, cy + 4, cx - 3, cy, col)
+        else:
+            pyxel.tri(cx - 2, cy - 4, cx - 2, cy + 4, cx + 3, cy, col)
+
+    def _shop_set_kind(self, i):
+        self.shop_kind = i
+        self.scroll.pop("shop", None)
+
+    def _shop_page_kinds(self, d):
+        n = len(game.CATEGORIES)
+        self.shop_cat_off = min(max(self.shop_cat_off + d, 0), max(0, n - 2))
+
+    def _shop_cycle(self, what):
+        if what == "filter":
+            self.shop_filter = (self.shop_filter + 1) % len(game.SHOP_FILTERS)
+        else:
+            self.shop_sort = (self.shop_sort + 1) % len(game.SHOP_SORTS)
+        self.scroll.pop("shop", None)
+
+    def _shop_strip(self):
+        """種別タブ(種別が3つ以上なら ◀ ▶ でめくる)と、絞り込み・並べ替えのボタン。"""
+        cats = game.CATEGORIES
+        n = len(cats)
+        self.shop_kind = min(self.shop_kind, n - 1)
+        y, h = 20, 16
+        if n <= 2:
+            slots, x0, w = list(range(n)), 8, 52
+        else:
+            off = min(self.shop_cat_off, n - 2)
+            slots, x0, w = [off, off + 1], 24, 40
+            self.arrow_button(8, y, 14, h, -1, lambda: self._shop_page_kinds(-1), enabled=off > 0)
+            self.arrow_button(x0 + 2 * (w + 2), y, 14, h, 1, lambda: self._shop_page_kinds(1), enabled=off + 2 < n)
+        for k, idx in enumerate(slots):
+            label = self.fit(cats[idx][1], w - 4)
+            self.button(x0 + k * (w + 2), y, w, h, label, lambda idx=idx: self._shop_set_kind(idx),
+                        active=(idx == self.shop_kind))
+        self.button(126, y, 58, h, game.SHOP_FILTERS[self.shop_filter][1], lambda: self._shop_cycle("filter"),
+                    active=self.shop_filter != 0)
+        self.button(186, y, 62, h, game.SHOP_SORTS[self.shop_sort][1], lambda: self._shop_cycle("sort"),
+                    active=self.shop_sort != 0)
+
+    def _shop_ids(self, kind):
+        """表示するアイテムID。条件と持ち物が変わったときだけ作り直す(商品が何千あっても毎フレームは数えない)。"""
+        s = self.state
+        filt = game.SHOP_FILTERS[self.shop_filter][0]
+        sort = game.SHOP_SORTS[self.shop_sort][0]
+        key = (game.CATALOG_VERSION, kind, filt, sort, s["s_fish"], s["g_fish"],
+               len(s["owned_toys"]), sum(s["food_stock"].values()))
+        if self._shop_cache[0] != key:
+            self._shop_cache = (key, game.shop_ids(s, kind, filt, sort))
+        return self._shop_cache[1]
+
     def draw_shop(self):
         s = self.state
-        self.sub_tabs("shop")
-        kind = "toy" if self.sub["shop"] == 0 else "food"
-        ids = [k for k, v in game.ITEMS.items() if v["kind"] == kind]
+        self._shop_strip()
+        kind = game.CATEGORIES[self.shop_kind][0]
+        ids = self._shop_ids(kind)
+        owned_set = set(s["owned_toys"])
 
         def row(i, ry, clip):
             item_id = ids[i]
             it = game.ITEMS[item_id]
-            sel = self.selected["shop"] == item_id
-            if sel:
+            if self.selected["shop"] == item_id:
                 pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
-            owned = kind == "toy" and item_id in s["owned_toys"]
+            owned = kind == "toy" and item_id in owned_set
             self.tx(12, ry + 2, it["name"], C_DIM if owned else C_TEXT)
             if owned:
-                self.tx_right(SCREEN_W - 14, ry + 2, "もっている", C_DIM)
+                self.tx_right(ROW_RIGHT, ry + 2, "もっている", C_DIM)
             else:
                 afford = s[it["cur"] + "_fish"] >= it["cost"]
-                self.tx_right(SCREEN_W - 14, ry + 2, game.price_text(item_id), C_SUB if afford else C_BAD)
+                self.tx_right(ROW_RIGHT, ry + 2, game.price_text(item_id), C_SUB if afford else C_BAD)
             self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("shop", item_id), clip)
 
-        self.list_view("shop" + str(self.sub["shop"]), 8, 40, SCREEN_W - 16, 112, len(ids), row)
+        list_h = 96
+        if not ids:
+            self.tx(12, 46, "条件に合う商品はありません", C_SUB)
+        self.list_view("shop", 8, 40, SCREEN_W - 16, list_h, len(ids), row)
 
         sel = self.selected["shop"]
-        panel_y = 156
+        panel_y = 40 + list_h + 4
         panel_h = TAB_Y - 4 - panel_y
         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
-        if sel:
+        if sel in game.ITEMS:
             it = game.ITEMS[sel]
             self.tx(14, panel_y + 4, "{0}  {1}".format(it["name"], game.price_text(sel)), C_ACCENT)
             info = it["desc"]
@@ -606,14 +865,17 @@ class App:
                 info += "(庭を{0}マス使う)".format(it["size"])
             if it["kind"] == "food":
                 info += "(約{0}分もつ)".format(it["size"])
-            desc_y = panel_y + 4 + LINE_H + 4
-            max_desc_lines = max(1, (panel_h - (desc_y - panel_y)) // LINE_H)
-            for i, line in enumerate(self.wrap(info, SCREEN_W - 36)[:max_desc_lines]):
-                self.tx(14, desc_y + i * LINE_H, line, C_TEXT)
-            owned = it["kind"] == "toy" and sel in s["owned_toys"]
+            # 説明の枠: 見出しの下から、パネルの下端まで。長い説明はページに分かれる
+            ty = panel_y + 4 + LINE_H
+            th = panel_y + panel_h - ty
+            self.shop_pager.set(("shop", sel), [(info, C_TEXT)], self.wrap, SCREEN_W - 16, th, group=None)
+            self.shop_pager.draw(self, 8, ty)
+            self.pager_regs.append((self.shop_pager, 8, ty, SCREEN_W - 16, th))
+            owned = it["kind"] == "toy" and sel in owned_set
             self.button(SCREEN_W - 66, panel_y + 2, 52, 16, "買う", self.do_buy, enabled=not owned)
         else:
-            self.tx(14, panel_y + 8, "商品をタップすると説明が出ます", C_SUB)
+            self.tx(14, panel_y + 6, "商品をタップすると説明が出ます", C_SUB)
+            self.tx(14, panel_y + 6 + LINE_H, "({0}件)".format(len(ids)), C_DIM)
 
     def select(self, screen, item_id):
         self.selected[screen] = item_id
@@ -650,11 +912,11 @@ class App:
                 placed = item_id in s["yard"]
                 extra = "({0}マス)".format(it["size"]) if it["size"] > 1 else ""
                 self.tx(12, ry + 2, it["name"] + extra, C_TEXT)
-                self.tx_right(SCREEN_W - 14, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
+                self.tx_right(ROW_RIGHT, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
                 fn = (lambda t=item_id: self.do_toggle_toy(t))
             else:
                 self.tx(12, ry + 2, "{0} ×{1}".format(it["name"], s["food_stock"][item_id]), C_TEXT)
-                self.tx_right(SCREEN_W - 14, ry + 2, "置く", C_SUB)
+                self.tx_right(ROW_RIGHT, ry + 2, "置く", C_SUB)
                 fn = (lambda f=item_id: self.do_set_food(f))
             self.hit(8, ry, SCREEN_W - 16, ROW_H, fn, clip)
 
@@ -693,107 +955,74 @@ class App:
 
     # ---- おたから(猫の図鑑)
     def draw_cats(self):
+        """図鑑は「出会った順」に並ぶ。猫がはじめて庭に来たときに、その順番の位置が決まる。
+        未発見の猫は1行(あと◯匹)にまとめるので、猫が何匹いても一覧は長くならない。"""
         s = self.state
-        ids = list(game.CATS)
-        self.tx(8, 22, "猫たち(タップで詳しく)", C_SUB)
+        met = game.met_list(s)
+        total = len(game.CATS)
+        unmet = total - len(met)
+        n_rows = len(met) + (1 if unmet > 0 else 0)
+        self.tx(8, 22, "出会った猫 {0}/{1}".format(len(met), total), C_SUB)
 
         def row(i, ry, clip):
-            cid = ids[i]
-            c = s["cats"][cid]
-            sel = self.selected["cats"] == cid
-            if sel:
-                pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
-            met = c["met"]
-            name = game.CATS[cid]["name"] if met else "？？？"
-            self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + name, C_TEXT if met else C_DIM)
-            if met:
-                self.tx_right(SCREEN_W - 14, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
-            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
+            if i < len(met):
+                cid = met[i]
+                c = s["cats"][cid]
+                if self.selected["cats"] == cid:
+                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+                self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + game.CATS[cid]["name"], C_TEXT)
+                self.tx_right(ROW_RIGHT, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
+                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
+            else:
+                if self.selected["cats"] == UNMET_KEY:
+                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+                self.tx(12, ry + 2, "？？？", C_DIM)
+                self.tx_right(ROW_RIGHT, ry + 2, "あと{0}匹".format(unmet), C_DIM)
+                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("cats", UNMET_KEY), clip)
 
-        list_h = 5 * ROW_H
-        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, len(ids), row)
+        list_h = 4 * ROW_H
+        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, n_rows, row)
 
         panel_y = 38 + list_h + 6
         panel_h = TAB_Y - 4 - panel_y
         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
         sel = self.selected["cats"]
-        if not sel:
-            self.panel_key = None
+        if sel == UNMET_KEY and unmet > 0:
+            blocks = [("？？？", C_DIM),
+                      ("まだ出会っていない猫が、あと{0}匹いる。庭に遊びに来ると、ここに載るよ。".format(unmet), C_TEXT)]
+            self.cat_pager.set(("unmet", unmet), blocks, self.wrap, SCREEN_W - 16, panel_h, group="unmet")
+        elif sel in s["cats"] and s["cats"][sel]["met"]:
+            c = s["cats"][sel]
+            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"])
+            self.cat_pager.set(key, self._cat_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
+        else:
             self.tx(14, panel_y + 6, "猫をタップしてね", C_SUB)
             return
+        self.cat_pager.draw(self, 8, panel_y)
+        self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
 
-        c = s["cats"][sel]
-        key = (sel, c["met"], c["given_treasure"])
-        if key != self.panel_key:
-            self.panel_key = key
-            self.panel_colors = self._build_cat_panel(sel)
-        y = panel_y + 6
-        for line, col in zip(self.panel_tw.visible.split("\n"), self.panel_colors):
-            self.tx(14, y, line, col)
-            y += LINE_H
-
-    def _build_cat_panel(self, sel):
-        """図鑑パネルの表示内容を組み立て、タイプライターにセットする。戻り値は行ごとの色。"""
-        spec, c = game.CATS[sel], self.state["cats"][sel]
-        met = c["met"]
-        lines, colors = [], []
-
-        # 見出しの分だけ縦の余裕がないので、空行は入れずに詰めて並べる
-        lines.append(spec["name"] if met else "？？？")
-        colors.append(C_ACCENT if met else C_DIM)
-
-        if met:
-            desc_lines = self.wrap(spec["desc"], SCREEN_W - 36)[:2]
-        else:
-            desc_lines = self.wrap("まだ出会っていない猫。庭に遊びに来ると正体がわかるよ。", SCREEN_W - 36)[:2]
-        for line in desc_lines:
-            lines.append(line)
-            colors.append(C_TEXT)
-
-        if met:
-            now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
-            lines.append("いま: " + now)
-        else:
-            lines.append("いま: ？？？")
-        colors.append(C_SUB)
-
-        if met and c["given_treasure"]:
-            colors.append(C_ACCENT)
-            lines.append("お宝:「{0}」".format(spec["treasure"]))
-        elif met:
-            colors.append(C_DIM)
-            lines.append("お宝: ？？？(累計3000分〜)")
-        else:
-            colors.append(C_DIM)
-            lines.append("お宝: ？？？")
-
-        self.panel_tw.set_text("\n".join(lines))
-        return colors
+    def _cat_blocks(self, cid):
+        """プロフィールの中身。伏せ字(まだ明かされていないお宝)は、本当の文と同じ長さの「？」で組む。
+        こうすると、あとで明かされても行の数や位置が変わらない。"""
+        spec, c = game.CATS[cid], self.state["cats"][cid]
+        now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
+        treasure = spec["treasure"] if c["given_treasure"] else "？" * len(spec["treasure"])
+        return [(spec["name"], C_ACCENT),
+                (spec["desc"], C_TEXT),
+                ("いま: " + now, C_SUB),
+                ("お宝:「{0}」".format(treasure), C_ACCENT if c["given_treasure"] else C_DIM)]
 
     # ---- ヘルプ
     def draw_help(self):
-        x, y, w = 8, 24, SCREEN_W - 16
-        avail_h = TAB_Y - 4 - y
-        total_lines = self.help_tw.text.split("\n")
-        footer = "自動でセーブしています" if self.save_path else "この環境ではセーブできません"
-        content_h = len(total_lines) * LINE_H + LINE_H + 6
-
-        maxs = max(0, content_h - avail_h)
-        off = min(max(self.scroll.get("help", 0), 0), maxs)
-        self.scroll["help"] = off
-        self.areas.append(("help", x, y, w, avail_h, maxs))
-
-        pyxel.clip(x, y, w, avail_h)
-        for i, line in enumerate(self.help_tw.visible.split("\n")):
-            self.tx(x, y + i * LINE_H - off, line, C_TEXT)
-        if self.help_tw.done:
-            self.tx(x, y + len(total_lines) * LINE_H + 6 - off, footer, C_GOOD if self.save_path else C_BAD)
-        pyxel.clip()
-
-        if maxs > 0:
-            bar_h = max(8, avail_h * avail_h // content_h)
-            bar_y = y + (avail_h - bar_h) * off // maxs
-            pyxel.rect(x + w - 2, int(bar_y), 2, bar_h, C_DIM)
+        """ヘルプもタイプライターで読み上げる。長いぶんはページに分かれ、▼ が点滅したらタップで次へ。"""
+        x, y, w = 0, HEADER_H + 2, SCREEN_W
+        h = TAB_Y - 4 - y
+        blocks = [(text, C_TEXT) for text in HELP_LINES]
+        blocks.append(("", C_TEXT))
+        blocks.append(("自動でセーブしています", C_GOOD) if self.save_path else ("この環境ではセーブできません", C_BAD))
+        self.help_pager.set(("help", bool(self.save_path)), blocks, self.wrap, w, h)
+        self.help_pager.draw(self, x, y)
+        self.pager_regs.append((self.help_pager, x, y, w, h))
 
 
 if not os.environ.get("NEKOATSUME_NO_AUTORUN"):   # テストから import するときだけ自動起動を止める
