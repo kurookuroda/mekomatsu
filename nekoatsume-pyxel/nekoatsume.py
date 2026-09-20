@@ -72,6 +72,55 @@ def event_text(ev):
     return ""
 
 
+class Typewriter:
+    """1文字ずつ表示するための小さな状態機械。
+
+    aozora_reader.py(kanekofumiko)の演出を移植したもの。
+    表示する文字列はあらかじめ折り返し済み("\\n" 区切り)で渡す前提で、
+    改行はコマ数を消費せずに読み飛ばす。
+    """
+    INTERVAL = 2   # 1文字ごとのフレーム数(30fpsで秒間15文字ほど)
+
+    def __init__(self):
+        self.text = ""
+        self.revealed = 0
+        self.timer = 0
+        self.done = True
+
+    def set_text(self, text):
+        if text == self.text:
+            return
+        self.text = text
+        self.revealed = 0
+        self.timer = 0
+        self.done = len(text) == 0
+
+    def skip(self):
+        self.revealed = len(self.text)
+        self.done = True
+
+    def update(self, on_char=None):
+        if self.done:
+            return
+        self.timer += 1
+        if self.timer < self.INTERVAL:
+            return
+        self.timer = 0
+        while self.revealed < len(self.text) and self.text[self.revealed] == "\n":
+            self.revealed += 1
+        if self.revealed < len(self.text):
+            ch = self.text[self.revealed]
+            self.revealed += 1
+            if on_char:
+                on_char(ch)
+        if self.revealed >= len(self.text):
+            self.done = True
+
+    @property
+    def visible(self):
+        return self.text[:self.revealed]
+
+
 class App:
     def __init__(self, run=True):
         pyxel.init(SCREEN_W, SCREEN_H, title="ねこあつめ", fps=30)
@@ -84,12 +133,18 @@ class App:
         self.sub = {"shop": 0, "bag": 0}       # 0=おもちゃ 1=エサ
         self.selected = {"shop": None, "cats": None}
         self.scroll = {}
-        self.log = []
-        self.toast = None                      # [text, color, frames]
+        self.log = []                          # [{"full": 折り返し済みテキスト, "revealed": int}]
+        self.log_timer = 0
+        self.toast = None                      # {"col":..., "frames":...}
+        self.toast_tw = Typewriter()
+        self.panel_tw = Typewriter()
+        self.panel_key = None                  # 図鑑パネルの再生アニメが必要かの判定用
+        self.panel_colors = []
         self.modal = None                      # {"text":..., "yes": fn}
         self.hits = []
         self.areas = []
         self.press = None
+        self._init_sound()
 
         self._init_save()
         self.state = self._load()
@@ -97,6 +152,17 @@ class App:
 
         if run:
             pyxel.run(self.update, self.draw)
+
+    # ------------------------------------------------------------ 音
+    def _init_sound(self):
+        """一文字ずつ表示するときの生成サウンド(aozora_reader.py の演出を移植)。"""
+        self.snd_talk = pyxel.Sound()
+        self.snd_talk.set("c3", "t", "2", "n", 1)
+        self.snd_talk_space = pyxel.Sound()
+        self.snd_talk_space.set("c3", "t", "3", "n", 1)
+
+    def _play_type_sound(self, ch):
+        pyxel.play(3, self.snd_talk_space if ch.isspace() else self.snd_talk)
 
     # ------------------------------------------------------------ 保存
     def _init_save(self):
@@ -179,21 +245,50 @@ class App:
         return lines
 
     def add_log(self, text):
-        self.log.append(text)
+        full = "\n".join(self.wrap(text, SCREEN_W - 20))
+        self.log.append({"full": full, "revealed": 0})
         self.log = self.log[-LOG_MAX:]
 
+    def _advance_log_typing(self):
+        """一番古い「まだ出し終えていない」できごとだけを、1文字ずつ進める(順番に表示される)。"""
+        for entry in self.log:
+            if entry["revealed"] >= len(entry["full"]):
+                continue
+            self.log_timer += 1
+            if self.log_timer >= Typewriter.INTERVAL:
+                self.log_timer = 0
+                full = entry["full"]
+                while entry["revealed"] < len(full) and full[entry["revealed"]] == "\n":
+                    entry["revealed"] += 1
+                if entry["revealed"] < len(full):
+                    ch = full[entry["revealed"]]
+                    entry["revealed"] += 1
+                    self._play_type_sound(ch)
+            break
+
+    def _log_typing(self):
+        return any(e["revealed"] < len(e["full"]) for e in self.log)
+
+    def _skip_log(self):
+        for e in self.log:
+            e["revealed"] = len(e["full"])
+
     def visible_log(self, max_lines):
-        """新しい順に、行数に収まる分だけ「一文まるごと」取り出す(途中で切れた文は出さない)。"""
+        """新しい順に、行数に収まる分だけ「一文まるごと」取り出す(途中で切れた文は出さない)。
+        まだ表示の順番が回ってきていない(revealed==0)できごとは出さない。"""
         out = []
         for entry in reversed(self.log):
-            lines = self.wrap(entry, SCREEN_W - 20)
+            if entry["revealed"] == 0:
+                continue
+            lines = entry["full"][:entry["revealed"]].split("\n")
             if len(out) + len(lines) > max_lines:
                 break
             out = lines + out
         return out
 
     def show_toast(self, text, col=C_TEXT):
-        self.toast = [text, col, TOAST_FRAMES]
+        self.toast = {"col": col, "frames": TOAST_FRAMES}
+        self.toast_tw.set_text("\n".join(self.wrap(text, SCREEN_W - 24)))
 
     # ------------------------------------------------------------ 入力
     def _pointer(self):
@@ -236,7 +331,10 @@ class App:
             moved = self.press["moved"]
             self.press = None
             if not moved:
-                self.tap(mx, my)
+                if self._typing_active():
+                    self._skip_typing()
+                else:
+                    self.tap(mx, my)
         if wheel:
             area = self._area_at(mx, my)
             if area:
@@ -262,6 +360,15 @@ class App:
             self.screen = name
             self.hits, self.areas, self.press = [], [], None
 
+    # ------------------------------------------------------------ 一文字ずつ表示(タイプライター)
+    def _typing_active(self):
+        return self._log_typing() or not self.toast_tw.done or not self.panel_tw.done
+
+    def _skip_typing(self):
+        self._skip_log()
+        self.toast_tw.skip()
+        self.panel_tw.skip()
+
     # ------------------------------------------------------------ 更新
     def update(self):
         rep = game.advance(self.state, self.clock())
@@ -273,10 +380,14 @@ class App:
                 self.add_log("{0}分たちました。猫が{1}回遊びに来たよ".format(rep["ticks"], rep["visits"]))
             self.save()
         self.handle_input()
+        self._advance_log_typing()
+        self.toast_tw.update(self._play_type_sound)
+        self.panel_tw.update(self._play_type_sound)
         if self.toast:
-            self.toast[2] -= 1
-            if self.toast[2] <= 0:
-                self.toast = None
+            if self.toast_tw.done:
+                self.toast["frames"] -= 1
+                if self.toast["frames"] <= 0:
+                    self.toast = None
 
     # ------------------------------------------------------------ 描画の部品
     def hit(self, x, y, w, h, fn, clip=None):
@@ -339,11 +450,11 @@ class App:
                 pyxel.circ(i * w + w - 7, TAB_Y + 6, 3, C_ACCENT)   # 受け取れるものがある印
 
     def draw_toast(self):
-        text, col, _frames = self.toast
-        lines = self.wrap(text, SCREEN_W - 24)
-        h = len(lines) * 13 + 8
+        col = self.toast["col"]
+        total_lines = self.toast_tw.text.split("\n")
+        h = len(total_lines) * 13 + 8
         self.draw_panel(6, HEADER_H + 4, SCREEN_W - 12, h)
-        for i, line in enumerate(lines):
+        for i, line in enumerate(self.toast_tw.visible.split("\n")):
             self.tx(12, HEADER_H + 8 + i * 13, line, col)
 
     def draw_modal(self):
@@ -561,8 +672,11 @@ class App:
             sel = self.selected["cats"] == cid
             if sel:
                 pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
-            self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + game.CATS[cid]["name"], C_TEXT)
-            self.tx_right(SCREEN_W - 14, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
+            met = c["met"]
+            name = game.CATS[cid]["name"] if met else "？？？"
+            self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + name, C_TEXT if met else C_DIM)
+            if met:
+                self.tx_right(SCREEN_W - 14, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
             self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
 
         self.list_view("cats", 8, 38, SCREEN_W - 16, 5 * ROW_H, len(ids), row)
@@ -570,20 +684,61 @@ class App:
         self.draw_panel(8, 124, SCREEN_W - 16, 100)
         sel = self.selected["cats"]
         if not sel:
+            self.panel_key = None
             self.tx(14, 130, "猫をタップしてね", C_SUB)
             return
-        spec, c = game.CATS[sel], s["cats"][sel]
-        self.tx(14, 130, spec["name"], C_ACCENT)
-        y = 144
-        for line in self.wrap(spec["desc"], SCREEN_W - 36)[:3]:
-            self.tx(14, y, line, C_TEXT)
+
+        c = s["cats"][sel]
+        key = (sel, c["met"], c["given_treasure"])
+        if key != self.panel_key:
+            self.panel_key = key
+            self.panel_colors = self._build_cat_panel(sel)
+        y = 130
+        for line, col in zip(self.panel_tw.visible.split("\n"), self.panel_colors):
+            self.tx(14, y, line, col)
             y += 13
-        now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
-        self.tx(14, y + 2, "いま: " + now, C_SUB)
-        if c["given_treasure"]:
-            self.tx(14, y + 16, "お宝:「{0}」".format(spec["treasure"]), C_ACCENT)
+
+    def _build_cat_panel(self, sel):
+        """図鑑パネルの表示内容を組み立て、タイプライターにセットする。戻り値は行ごとの色。"""
+        spec, c = game.CATS[sel], self.state["cats"][sel]
+        met = c["met"]
+        lines, colors = [], []
+
+        lines.append(spec["name"] if met else "？？？")
+        colors.append(C_ACCENT if met else C_DIM)
+        lines.append("")
+        colors.append(C_TEXT)
+
+        if met:
+            desc_lines = self.wrap(spec["desc"], SCREEN_W - 36)[:3]
         else:
-            self.tx(14, y + 16, "お宝: ？？？(累計3000分〜)", C_DIM)
+            desc_lines = self.wrap("まだ出会っていない猫。庭に遊びに来ると正体がわかるよ。", SCREEN_W - 36)
+        for line in desc_lines:
+            lines.append(line)
+            colors.append(C_TEXT)
+
+        lines.append("")
+        colors.append(C_SUB)
+        if met:
+            now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
+            lines.append("いま: " + now)
+        else:
+            lines.append("いま: ？？？")
+        colors.append(C_SUB)
+
+        lines.append("")
+        if met and c["given_treasure"]:
+            colors.append(C_ACCENT)
+            lines.append("お宝:「{0}」".format(spec["treasure"]))
+        elif met:
+            colors.append(C_DIM)
+            lines.append("お宝: ？？？(累計3000分〜)")
+        else:
+            colors.append(C_DIM)
+            lines.append("お宝: ？？？")
+
+        self.panel_tw.set_text("\n".join(lines))
+        return colors
 
     # ---- ヘルプ
     def draw_help(self):
