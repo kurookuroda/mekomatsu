@@ -1,0 +1,1808 @@
+diff --git a/nekoatsume-pyxel/README.md b/nekoatsume-pyxel/README.md
+index 6c58bcd..5657c12 100644
+--- a/nekoatsume-pyxel/README.md
++++ b/nekoatsume-pyxel/README.md
+@@ -10,21 +10,28 @@ Pyxel で作る「ねこあつめ」風の放置ゲーム(いまは文字だけ
+ nekoatsume-pyxel/
+ ├── nekoatsume.py              # Pyxel の UI(起動するスクリプト)
+ ├── game.py                    # ゲームのルール(Pyxel に依存しない)
++├── catalog.py                 # アイテム・猫のデータ表(ここに足すだけで増やせる)
+ ├── test_game.py               # ルールのテスト(pytest)
+ ├── tools/ui_smoke.py          # UI のスモークテスト(タップ操作の再現とスクリーンショット)
+-├── PixelMplus12-Regular.ttf   # 日本語ピクセルフォント(要ライセンス確認・下記参照)
++├── PixelMplus12-Regular.ttf   # 日本語ピクセルフォント 12px(要ライセンス確認・下記参照)
++├── PixelMplus10-Regular.ttf   # 同 10px(nekoatsume.py の FONT_PATH / FONT_SIZE で切り替え)
+ └── README.md
+ ```
+ 
+-`nekoatsume.py` と `game.py` とフォントは **リポジトリ直下(フラット)** に置きます
++`nekoatsume.py` と `game.py` と `catalog.py` とフォントは **リポジトリ直下(フラット)** に置きます
+ (Pyxel Web Launcher はスクリプトと同じ場所のファイルを読むため)。
+ 
+ ## 遊び方
+ 
+ - 起動: `pip install pyxel` のあと `pyxel run nekoatsume.py`
+-- ブラウザ: `https://kitao.github.io/pyxel/wasm/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume`
++- ブラウザ: `https://kitao.github.io/pyxel/web/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume`
+   - スマホでは末尾に `&gamepad=enabled` を付けると仮想ゲームパッドが出ます(このゲームでは使いません。付けなくて構いません)
+-- 操作: タップ / クリック。リストはドラッグ(PC はホイールや ↑↓ キー)でスクロール。1〜5 キーで下のタブを切り替え
++- 操作: タップ / クリック。1〜5 キーで下のタブを切り替え
++  - リスト: ドラッグ(PC はホイールや ↑↓ / PageUp / PageDown / Home / End キー)でスクロール。
++    **右端のバーをつかんで動かすと、何百件あっても一気に目的の場所へ行けます**
++  - 文章: 1文字ずつ表示されます。表示中にタップすると、その場で全部出ます
++  - 文章が枠に収まらないときは、ページに分かれます。右下で ▼ が点滅したら、タップ(または Enter / Space)で次のページへ
++  - 長いお知らせ(お宝がたくさん届いたときなど)は、ページ送りのダイアログで出ます。最後のページでタップすると閉じます
+ 
+ 流れは、ショップで買う → もちものからおもちゃとエサを庭に置く → 猫が来て、帰るときにさかなを置いていく → 「にわ」で受け取る、です。
+ エサは300分(5時間)でなくなります。アプリを閉じている間も、実時間のぶんだけ進みます。
+@@ -44,11 +51,36 @@ nekoatsume-pyxel/
+ 
+ ```
+ pip install pyxel pytest
+-pytest -q                          # ゲームのルール(22 件)
++pytest -q                          # ゲームのルール(32 件。猫1000匹・商品600種類の規模テストを含む)
+ python3 tools/ui_smoke.py          # UI(画面のない Linux では xvfb-run を付ける。tools/ui_smoke.py 冒頭を参照)
+ pyxel package . nekoatsume.py      # 複数ファイルを .pyxapp にまとめる(Launcher の ?play= や app2html で使える)
+ ```
+ 
++## 猫・アイテムを増やす
++
++`catalog.py` の表に1行足すだけです(コードの変更は要りません)。
++
++```python
++# おもちゃ: (ID, 名前, 価格, 通貨, 庭で使うマス数, 説明)
++("bell_toy", "鈴のおもちゃ", 40, "s", 1, "ちりんと鳴る、小さな鈴。"),
++# 猫: (ID, 名前, 紹介文, お宝)   個性を変えるときは、末尾に {"strength": 6, "entry_chance": 0.05} のように足す
++("mike", "ミケ", "三毛のおっとりした猫", "小さな鈴"),
++```
++
++ID は英数字とアンダースコアで、セーブデータのキーになるので、あとから変えないでください。
++読み込むときに、ID の重複・庭に入らない大きさのおもちゃ・種別のないアイテムをチェックします(`ValueError`)。
++
++猫やアイテムが増えても困らないように、次の作りにしてあります。
++
++- **図鑑は「出会った順」**に並びます。猫がはじめて庭に来たとき、図鑑の中での位置が決まります(`met_order`)。
++  未発見の猫は「？？？ あと◯匹」の1行にまとめるので、一覧は長くなりません。
++- **セーブに入る猫は、出会った猫だけ**です(未発見の猫は状態を持ちません)。1000匹でも、保存の大きさは出会った分で済みます。
++- **プロフィールの伏せ字は、本当の文と同じ長さ**(「？」×文字数)で組みます。お宝が明かされても、行の数や位置が変わりません。
++- **ショップ**は、種別タブ(3つ以上なら ◀ ▶ でめくる)・絞り込み(すべて / 買える / 未所持)・並べ替え(標準 / 安い順 / 高い順)で探せます。
++  見えている行だけを描くので、商品が何千あっても軽く、条件や持ち物が変わったときだけ並べ直します。
++- 来訪判定は、エサとおもちゃがあるときだけ行い、猫が多いときは順番を混ぜます(先頭の猫ばかりが席を取らないように)。
++  猫1000匹・30日ぶんの離席から復帰しても、0.2秒ほどで済みます(実測)。
++
+ ## コンソール版からの意図的な変更
+ 
+ 1. 庭の容量判定を `<` から `<=` にしました(元は6マスあっても5マスしか使えませんでした)。
+@@ -66,13 +98,15 @@ pyxel package . nekoatsume.py      # 複数ファイルを .pyxapp にまとめ
+ 
+ 確認済み(Linux + 仮想ディスプレイ):
+ 
+-- ゲームのルール(pytest 22 件)
++- ゲームのルール(pytest 32 件)と、猫1000匹・商品600種類での動作・速度・セーブの大きさ
+ - UI の画面遷移・購入・配置・エサの置き換え・受け取り・セーブ/ロード
++- ページ送り(長い紹介文・ヘルプ・長いメッセージ)で、文章が枠の下や右にはみ出さないこと
++- スクロールバーのドラッグ(猫300匹・商品600件)と、種別タブが多いときの ◀ ▶
+ - `pyxel package` で .pyxapp を作れること
+ 
+ **未確認(公開前に確認したいこと)**:
+ 
+-- Pyxel Web Launcher(`?run=`)で `game.py` を import できるか。できない場合は `.pyxapp` にして `?play=` で動かす
++- `catalog.py` を足したあとの Pyxel Web Launcher での起動(`game.py` の import は確認済み)
+ - ブラウザ版で `user_data_dir` のセーブが、ページを閉じても残るか
+ - スマホ実機でのタップとドラッグスクロール
+ - フォントのライセンスと同梱可否
+@@ -82,3 +116,6 @@ pyxel package . nekoatsume.py      # 複数ファイルを .pyxapp にまとめ
+ - 猫ごとの個性(好物のおもちゃ、来訪率、押し出しの強さ)と、図鑑の充実
+ - 絵(スプライト)の追加
+ - 経済の調整(使い道のない銀の解消)
++
++- 猫が増えたときの来訪ペース: いまは猫ごとに「1分で10%」で来訪を判定するので、猫が数十匹以上になると、庭がいつも満席になり、
++  収入が頭打ちになります。猫ごとの「珍しさ」に応じた重みづけで、庭全体の来訪回数を一定に保つ設計への切り替えが必要です。
+diff --git a/nekoatsume-pyxel/catalog.py b/nekoatsume-pyxel/catalog.py
+new file mode 100644
+index 0000000..4934cd6
+--- /dev/null
++++ b/nekoatsume-pyxel/catalog.py
+@@ -0,0 +1,58 @@
++"""
++ねこあつめ Pyxel 版 ― データ表(アイテムと猫)
++
++ここに1行足すだけで、おもちゃ・エサ・猫を増やせます(コードの変更は要りません)。
++猫が1000匹、商品が数百種類になっても動くように作ってあります。
++
++ID は英数字とアンダースコア(セーブデータのキーになるので、あとから変えないこと)。
++通貨は "s"=銀 / "g"=金。
++"""
++
++# ショップの種別(タブ): (種別ID, 表示名)。種別IDは TOYS="toy" / FOODS="food"
++CATEGORIES = [("toy", "おもちゃ"), ("food", "エサ")]
++
++# おもちゃ: (ID, 名前, 価格, 通貨, 庭で使うマス数(=同時に遊べる猫の数), 説明)
++TOYS = [
++    ('rubber_ball', 'ゴムボール', 5, 's', 1, '小さな明るいオレンジ色のゴムボール。ふにふにで、ピコピコ鳴るよ!'),
++    ('sparkle_ball', 'キラキラボール', 5, 'g', 1, 'きらめくラメが入った、小さな透明のゴムボール!'),
++    ('yarn_ball', '毛糸玉', 10, 's', 1, '赤い毛糸玉だよ!'),
++    ('fancy_yarn_ball', '高級毛糸玉', 15, 'g', 1, '赤・青・緑に銀色の糸がきらめく、高級な毛糸玉!'),
++    ('tennis_ball', 'テニスボール', 25, 's', 1, '毛羽立った鮮やかな黄色のテニスボール!'),
++    ('paper_bag', '紙袋', 20, 's', 1, 'スーパーの紙袋。ガサガサいい音がするよ!'),
++    ('scratching_post', '爪とぎポール', 5, 'g', 1, '猫がバリバリ爪をとげる、いい感じのポール!'),
++    ('fancy_scratching_post', '高級爪とぎポール', 15, 'g', 1, '硬い木と合成皮革でできた、デラックスな爪とぎポール!'),
++    ('fishbowl', '金魚鉢', 10, 'g', 1, 'かわいい金魚が泳ぐ小さな金魚鉢!'),
++    ('small_condo', '小型キャットハウス', 75, 's', 3, '少しだけカーペット張りの小さなキャットハウス。3匹まで入れるよ!'),
++    ('medium_condo', '中型キャットハウス', 150, 's', 5, '全面カーペット張りの中くらいのキャットハウス。5匹まで入れるよ!'),
++    ('large_condo', '大型キャットハウス', 50, 'g', 6, '高級ベルベル絨毯に手縫いの仕上げ、6匹まで入れる大きなキャットハウス!'),
++    ('catnip', 'マタタビの袋', 7, 'g', 1, '小さなマタタビの袋。においで猫が大興奮!'),
++    ('plain_pillow', '無地のクッション', 30, 's', 1, '青くてやわらかい、小さな無地のクッション!'),
++    ('tie_dye_pillow', '絞り染めのクッション', 15, 'g', 1, '絞り染めのフリースでできた、ふかふかの厚いクッション!'),
++    ('plastic_bucket', 'プラスチックのバケツ', 20, 's', 1, '白い取っ手のついた小さな緑のバケツ。バケツがあるぞ!'),
++    ('cereal_box', 'シリアルの箱', 15, 's', 1, '「シナモンとろけるゴロゴロ」の空き箱!'),
++    ('fruit_box', '果物の箱', 75, 's', 1, '小さな段ボールの果物箱。入れそうなら、入っちゃう!'),
++    ('large_box', '大きな箱', 30, 'g', 4, 'もとは家電が入っていた大きな段ボール箱。猫が4匹まで入れるよ!'),
++    ('butterfly_toy', '蝶々のおもちゃ', 15, 'g', 1, '長い棒の先の糸に蝶々がぶら下がった、かわいいおもちゃ。ひらひら楽しい!'),
++    ('laser_pointer', 'ロボットレーザーポインター', 125, 'g', 1, 'レーザーポインターを持った小さなロボットアーム。みんな大好き!'),
++    ('rainbow_umbrella', '虹色の傘', 25, 'g', 5, '虹色もようの大きな傘。猫が5匹まで入れるよ!'),
++    ('plain_umbrella', '無地の傘', 250, 's', 4, '明るい黄色の大きな無地の傘。猫が4匹まで入れるよ!'),
++    ('plush_froggy', 'カエルのぬいぐるみ', 75, 's', 1, 'ぎゅっとすると鳴く、緑のかわいいカエルのぬいぐるみ!'),
++]
++
++# エサ: (ID, 名前, 価格, 通貨, もつ時間(分), 説明)
++FOODS = [
++    ('dry_food', 'ドライフード', 10, 's', 300, 'ごく普通のドライフード。カリカリでシンプルな味。'),
++    ('wet_food', 'ウェットフード缶', 2, 'g', 300, 'ごく普通のウェットフード。においが強烈!'),
++    ('fancy_food', '高級フード缶', 5, 'g', 300, '職人が手づくりした、フェアトレードのオーガニック猫ごはん。んー、おいしい!'),
++]
++
++# 猫: (ID, 名前, 紹介文, お宝) または (ID, 名前, 紹介文, お宝, {個性の上書き})
++#   個性: strength(押し出す強さ・既定5), entry_chance(来訪率・既定0.1), time_limit(滞在の上限分・既定30),
++#         fav_toy(好きなおもちゃID), exclusive(好物しか使わない)
++CATS = [
++    ('gordo', 'ゴードー', 'いつもあなたのごはんを食べにくる、いちばん手のかかる猫', '役に立たない木切れ(ゴードーだから)'),
++    ('pukka', 'プッカ', 'クリーム色のぶちがある白い短毛で、緑の目の猫。レーザーを追いかけたり、サーフィンをするのが大好き', 'サーフワックスのかたまり'),
++    ('peebles', 'ピーブルズ', '青い目の白黒の短毛猫。デスメタルとマタタビの山が好き', 'べっ甲のギターピック'),
++    ('tarawa', 'タラワ', '白い筋の入ったグレーの長毛で、灰色の目の猫。のんびりするのと、鳥を追いかけるのが好き', 'アオカケスの羽根', {'strength': 6}),
++    ('felix', 'フェリックス', 'オレンジと白の短毛のトラ猫で、黄色い目。とてもおだやかで、一日中ほとんど瞑想している', '仏像のお香立て'),
++]
+diff --git a/nekoatsume-pyxel/game.py b/nekoatsume-pyxel/game.py
+index bf54c14..0f9b902 100644
+--- a/nekoatsume-pyxel/game.py
++++ b/nekoatsume-pyxel/game.py
+@@ -14,6 +14,12 @@
+     3. アイテム種別(toy / food)を size の閾値ではなく kind で判定する
+     4. 内部IDと表示名を分離した(セーブデータのキーは ID)
+     5. おもちゃを庭から外したとき、遊んでいた猫はさかなを置いて帰る(元は無報酬で追い出していた)
++
++規模への備え(猫が1000匹、商品が数百種類になっても困らないように)
++    - アイテムと猫のデータは catalog.py の表にある(コードに埋め込まない)。load_catalog() で差し替えもできる
++    - セーブに入る猫の状態は「出会った猫」だけ(未発見の猫は状態を持たない)。出会った順は met_order
++    - 猫の来訪判定は、エサとおもちゃがあるときだけ行う。候補が多いときは順番をシャッフルして偏りをなくす
++    - ショップの絞り込み・並べ替えは shop_ids() にまとめた(UI は表示だけ)
+ """
+ 
+ import json
+@@ -21,6 +27,8 @@ import random
+ import time
+ from collections import namedtuple
+ 
++import catalog
++
+ VERSION = 1
+ 
+ SPACE = 6                      # 庭のマス数
+@@ -42,52 +50,62 @@ def _food(name, cost, cur, minutes, desc):
+     return {"kind": "food", "name": name, "cost": cost, "cur": cur, "size": minutes, "desc": desc}
+ 
+ 
+-ITEMS = {
+-    "rubber_ball": _toy("ゴムボール", 5, "s", 1, "小さな明るいオレンジ色のゴムボール。ふにふにで、ピコピコ鳴るよ!"),
+-    "sparkle_ball": _toy("キラキラボール", 5, "g", 1, "きらめくラメが入った、小さな透明のゴムボール!"),
+-    "yarn_ball": _toy("毛糸玉", 10, "s", 1, "赤い毛糸玉だよ!"),
+-    "fancy_yarn_ball": _toy("高級毛糸玉", 15, "g", 1, "赤・青・緑に銀色の糸がきらめく、高級な毛糸玉!"),
+-    "tennis_ball": _toy("テニスボール", 25, "s", 1, "毛羽立った鮮やかな黄色のテニスボール!"),
+-    "paper_bag": _toy("紙袋", 20, "s", 1, "スーパーの紙袋。ガサガサいい音がするよ!"),
+-    "scratching_post": _toy("爪とぎポール", 5, "g", 1, "猫がバリバリ爪をとげる、いい感じのポール!"),
+-    "fancy_scratching_post": _toy("高級爪とぎポール", 15, "g", 1, "硬い木と合成皮革でできた、デラックスな爪とぎポール!"),
+-    "fishbowl": _toy("金魚鉢", 10, "g", 1, "かわいい金魚が泳ぐ小さな金魚鉢!"),
+-    "small_condo": _toy("小型キャットハウス", 75, "s", 3, "少しだけカーペット張りの小さなキャットハウス。3匹まで入れるよ!"),
+-    "medium_condo": _toy("中型キャットハウス", 150, "s", 5, "全面カーペット張りの中くらいのキャットハウス。5匹まで入れるよ!"),
+-    "large_condo": _toy("大型キャットハウス", 50, "g", 6, "高級ベルベル絨毯に手縫いの仕上げ、6匹まで入れる大きなキャットハウス!"),
+-    "catnip": _toy("マタタビの袋", 7, "g", 1, "小さなマタタビの袋。においで猫が大興奮!"),
+-    "plain_pillow": _toy("無地のクッション", 30, "s", 1, "青くてやわらかい、小さな無地のクッション!"),
+-    "tie_dye_pillow": _toy("絞り染めのクッション", 15, "g", 1, "絞り染めのフリースでできた、ふかふかの厚いクッション!"),
+-    "plastic_bucket": _toy("プラスチックのバケツ", 20, "s", 1, "白い取っ手のついた小さな緑のバケツ。バケツがあるぞ!"),
+-    "cereal_box": _toy("シリアルの箱", 15, "s", 1, "「シナモンとろけるゴロゴロ」の空き箱!"),
+-    "fruit_box": _toy("果物の箱", 75, "s", 1, "小さな段ボールの果物箱。入れそうなら、入っちゃう!"),
+-    "large_box": _toy("大きな箱", 30, "g", 4, "もとは家電が入っていた大きな段ボール箱。猫が4匹まで入れるよ!"),
+-    "butterfly_toy": _toy("蝶々のおもちゃ", 15, "g", 1, "長い棒の先の糸に蝶々がぶら下がった、かわいいおもちゃ。ひらひら楽しい!"),
+-    "laser_pointer": _toy("ロボットレーザーポインター", 125, "g", 1, "レーザーポインターを持った小さなロボットアーム。みんな大好き!"),
+-    "rainbow_umbrella": _toy("虹色の傘", 25, "g", 5, "虹色もようの大きな傘。猫が5匹まで入れるよ!"),
+-    "plain_umbrella": _toy("無地の傘", 250, "s", 4, "明るい黄色の大きな無地の傘。猫が4匹まで入れるよ!"),
+-    "plush_froggy": _toy("カエルのぬいぐるみ", 75, "s", 1, "ぎゅっとすると鳴く、緑のかわいいカエルのぬいぐるみ!"),
+-    "dry_food": _food("ドライフード", 10, "s", 300, "ごく普通のドライフード。カリカリでシンプルな味。"),
+-    "wet_food": _food("ウェットフード缶", 2, "g", 300, "ごく普通のウェットフード。においが強烈!"),
+-    "fancy_food": _food("高級フード缶", 5, "g", 300, "職人が手づくりした、フェアトレードのオーガニック猫ごはん。んー、おいしい!"),
+-}
+-TOYS = {k: v for k, v in ITEMS.items() if v["kind"] == "toy"}
+-FOODS = {k: v for k, v in ITEMS.items() if v["kind"] == "food"}
+-
+-
+ def _cat(name, desc, treasure, strength=5, entry_chance=0.1, time_limit=30, fav_toy="", exclusive=False):
+     return {"name": name, "desc": desc, "treasure": treasure, "strength": strength,
+             "entry_chance": entry_chance, "time_limit": time_limit,
+             "fav_toy": fav_toy, "exclusive": exclusive}
+ 
+ 
+-CATS = {
+-    "gordo": _cat("ゴードー", "いつもあなたのごはんを食べにくる、いちばん手のかかる猫", "役に立たない木切れ(ゴードーだから)"),
+-    "pukka": _cat("プッカ", "クリーム色のぶちがある白い短毛で、緑の目の猫。レーザーを追いかけたり、サーフィンをするのが大好き", "サーフワックスのかたまり"),
+-    "peebles": _cat("ピーブルズ", "青い目の白黒の短毛猫。デスメタルとマタタビの山が好き", "べっ甲のギターピック"),
+-    "tarawa": _cat("タラワ", "白い筋の入ったグレーの長毛で、灰色の目の猫。のんびりするのと、鳥を追いかけるのが好き", "アオカケスの羽根", strength=6),
+-    "felix": _cat("フェリックス", "オレンジと白の短毛のトラ猫で、黄色い目。とてもおだやかで、一日中ほとんど瞑想している", "仏像のお香立て"),
+-}
++# load_catalog() が埋める。他のモジュールは game.ITEMS のように、使う時に参照すること(差し替えに追従するため)
++ITEMS = {}          # アイテムID -> 仕様(おもちゃとエサ。表の並び順)
++TOYS = {}
++FOODS = {}
++IDS_BY_KIND = {}    # 種別 -> アイテムIDのリスト(表の並び順)
++CATS = {}           # 猫ID -> 仕様(表の並び順)
++CATEGORIES = []     # ショップの種別 [(種別ID, 表示名)]
++CATALOG_VERSION = 0     # load_catalog() のたびに増える(UI 側のキャッシュ無効化用)
++
++
++def load_catalog(toys, foods, cats, categories):
++    """アイテムと猫のデータ表を読み込む(既定は catalog.py)。ID の重複や不正な値は ValueError。"""
++    global ITEMS, TOYS, FOODS, IDS_BY_KIND, CATS, CATEGORIES, CATALOG_VERSION
++    items, cat_specs = {}, {}
++    for row in toys:
++        iid = row[0]
++        if iid in items:
++            raise ValueError("duplicate item id: %s" % iid)
++        items[iid] = _toy(*row[1:])
++    for row in foods:
++        iid = row[0]
++        if iid in items:
++            raise ValueError("duplicate item id: %s" % iid)
++        items[iid] = _food(*row[1:])
++    for row in cats:
++        cid, name, desc, treasure = row[:4]
++        if cid in cat_specs:
++            raise ValueError("duplicate cat id: %s" % cid)
++        cat_specs[cid] = _cat(name, desc, treasure, **(row[4] if len(row) > 4 else {}))
++    for iid, it in items.items():
++        if it["cur"] not in ("s", "g") or it["cost"] <= 0 or it["size"] < 1:
++            raise ValueError("bad item: %s" % iid)
++        if it["kind"] == "toy" and it["size"] > SPACE:
++            raise ValueError("toy does not fit in the yard: %s" % iid)
++    kinds = [k for k, _label in categories]
++    ids_by_kind = {k: [] for k in kinds}
++    for iid, it in items.items():
++        if it["kind"] not in ids_by_kind:
++            raise ValueError("item %s has no category" % iid)
++        ids_by_kind[it["kind"]].append(iid)
++    ITEMS = items
++    TOYS = {k: v for k, v in items.items() if v["kind"] == "toy"}
++    FOODS = {k: v for k, v in items.items() if v["kind"] == "food"}
++    IDS_BY_KIND = ids_by_kind
++    CATS = cat_specs
++    CATEGORIES = list(categories)
++    CATALOG_VERSION += 1
++
++
++load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
+ 
+ 
+ def cur_name(cur):
+@@ -117,7 +135,8 @@ def new_state(now=None):
+         "food_stock": {},          # エサID -> 個数
+         "food": "",                # 庭に出ているエサID
+         "food_remaining": 0,       # 残り分(tick)
+-        "cats": {cid: _new_cat() for cid in CATS},
++        "cats": {},                # 出会った猫だけ(猫ID -> 状態)。猫が何匹いても、セーブは出会った分だけで済む
++        "met_order": [],           # 出会った順(図鑑の並び)
+         "pending_money": [],       # [猫ID, 量, "s"/"g"]
+         "pending_treasures": [],   # 猫ID
+         "last_tick": now,
+@@ -133,6 +152,19 @@ def occupants(state, toy_id):
+     return list(state["occ"].get(toy_id, []))
+ 
+ 
++def ensure_cat(state, cid):
++    """猫の状態を返す。まだ無ければ既定値で作る(出会い済みにはしない)。"""
++    c = state["cats"].get(cid)
++    if c is None:
++        c = state["cats"][cid] = _new_cat()
++    return c
++
++
++def met_list(state):
++    """出会った猫を、出会った順に返す(図鑑の並び)。"""
++    return list(state["met_order"])
++
++
+ def cats_in_yard(state):
+     return [cid for cid, c in state["cats"].items() if c["in_yard"]]
+ 
+@@ -178,23 +210,27 @@ def tick(state, rng=random, events=None):
+     """1 分ぶん進める(元の update.tick と同じ順序)。"""
+     ev = events if events is not None else []
+     cats = state["cats"]
+-    # 「庭にいない猫」は先に確定する(この tick で帰った猫は同 tick に再入場しない)
+-    candidates = [cid for cid, c in cats.items() if not c["in_yard"]]
+-    for cid in cats_in_yard(state):
++    # 「庭にいる猫」を先に確定する(この tick で帰った猫は同 tick に再入場しない)
++    in_yard = set(cats_in_yard(state))
++    for cid in list(in_yard):
+         c = cats[cid]
+         c["time_in_yard"] += 1
+         if _time_to_leave(c, CATS[cid], rng):
+             _leave(state, cid, rng, ev)
+     if state["food"]:
+-        for cid in candidates:
+-            if rng.random() < CATS[cid]["entry_chance"]:
+-                toy = _pick_toy(state, cid, rng)
+-                if toy is None:
+-                    continue
+-                if len(state["occ"][toy]) < TOYS[toy]["size"]:
+-                    _join(state, cid, toy, ev)
+-                else:
+-                    _try_push(state, cid, toy, rng, ev)
++        if state["yard"]:                      # おもちゃが無ければ、誰も来ないので判定しない
++            candidates = [cid for cid in CATS if cid not in in_yard]
++            if len(candidates) > 8:            # 猫が多いとき、先頭の猫ばかり席を取らないように順番を混ぜる
++                rng.shuffle(candidates)
++            for cid in candidates:
++                if rng.random() < CATS[cid]["entry_chance"]:
++                    toy = _pick_toy(state, cid, rng)
++                    if toy is None:
++                        continue
++                    if len(state["occ"][toy]) < TOYS[toy]["size"]:
++                        _join(state, cid, toy, ev)
++                    else:
++                        _try_push(state, cid, toy, rng, ev)
+         _reduce_food(state, ev)
+ 
+ 
+@@ -215,11 +251,14 @@ def _pick_toy(state, cid, rng):
+ 
+ 
+ def _join(state, cid, toy, events):
+-    c = state["cats"][cid]
++    c = ensure_cat(state, cid)
+     state["occ"][toy].append(cid)
+     c["in_yard"] = True
+     c["toy"] = toy
+-    c["met"] = True
++    if not c["met"]:                       # 図鑑での位置は「はじめて庭に来た順」で、このとき決まる
++        c["met"] = True
++        state["met_order"].append(cid)
++        events.append(("met", cid))
+     events.append(("arrive", cid, toy))
+     if c["total_time"] > TREASURE_MINUTES and not c["given_treasure"]:
+         c["given_treasure"] = True
+@@ -331,6 +370,34 @@ def set_food(state, food_id, force=False):
+     return Result(True, "ok", "{0}を置きました(残り{1}分)".format(FOODS[food_id]["name"], state["food_remaining"]))
+ 
+ 
++SHOP_FILTERS = (("all", "すべて"), ("buyable", "買える"), ("unowned", "未所持"))
++SHOP_SORTS = (("catalog", "標準"), ("price_asc", "安い順"), ("price_desc", "高い順"))
++
++
++def shop_ids(state, kind, filt="all", sort="catalog"):
++    """ショップに並べるアイテムIDを、絞り込み・並べ替え済みで返す。
++    filt: all=すべて / buyable=いま買える(所持金が足り、持っていない) / unowned=持っていない
++    sort: catalog=表の順 / price_asc=安い順 / price_desc=高い順(銀→金の順に、値段で比べる)
++    """
++    ids = list(IDS_BY_KIND.get(kind, []))
++    if filt != "all":
++        owned = set(state["owned_toys"])
++        stock = state["food_stock"]
++
++        def have(i):
++            return (i in owned) if kind == "toy" else stock.get(i, 0) > 0
++
++        if filt == "unowned":
++            ids = [i for i in ids if not have(i)]
++        elif filt == "buyable":
++            ids = [i for i in ids
++                   if not (kind == "toy" and have(i)) and state[ITEMS[i]["cur"] + "_fish"] >= ITEMS[i]["cost"]]
++    if sort in ("price_asc", "price_desc"):
++        ids.sort(key=lambda i: (0 if ITEMS[i]["cur"] == "s" else 1, ITEMS[i]["cost"]),
++                 reverse=(sort == "price_desc"))
++    return ids
++
++
+ def collect(state):
+     """猫たちが置いていったさかなを受け取る。[(猫ID, 量, 通貨)] を返す。"""
+     got = [tuple(m) for m in state["pending_money"]]
+@@ -413,19 +480,26 @@ def _sanitize(state, raw):
+     saved_cats = state["cats"] if isinstance(state["cats"], dict) else {}
+     saved_occ = state["occ"] if isinstance(state["occ"], dict) else {}
+     cats = {}
+-    for cid in CATS:
++    for cid, src in saved_cats.items():
++        if cid not in CATS or not isinstance(src, dict):
++            continue
+         c = _new_cat()
+-        src = saved_cats.get(cid, {})
+-        if isinstance(src, dict):
+-            c["in_yard"] = bool(src.get("in_yard", False))
+-            c["toy"] = src.get("toy", "") if isinstance(src.get("toy", ""), str) else ""
+-            c["time_in_yard"] = _int(src.get("time_in_yard", 0))
+-            c["total_time"] = _int(src.get("total_time", 0))
+-            c["given_treasure"] = bool(src.get("given_treasure", False))
+-            # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
+-            c["met"] = bool(src.get("met", False)) or c["in_yard"] \
+-                or c["total_time"] > 0 or c["given_treasure"]
+-        cats[cid] = c
++        c["in_yard"] = bool(src.get("in_yard", False))
++        c["toy"] = src.get("toy", "") if isinstance(src.get("toy", ""), str) else ""
++        c["time_in_yard"] = _int(src.get("time_in_yard", 0))
++        c["total_time"] = _int(src.get("total_time", 0))
++        c["given_treasure"] = bool(src.get("given_treasure", False))
++        # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
++        c["met"] = bool(src.get("met", False)) or c["in_yard"] \
++            or c["total_time"] > 0 or c["given_treasure"]
++        if c["met"]:                       # 出会っていない猫の状態は持たない(旧セーブの全員分の既定値は捨てる)
++            cats[cid] = c
++    met_order = []
++    for cid in (state["met_order"] if isinstance(state["met_order"], list) else []):
++        if cid in cats and cid not in met_order:
++            met_order.append(cid)
++    met_order.extend(cid for cid in cats if cid not in met_order)   # 順番が不明な旧セーブ分は、後ろに足す
++    state["met_order"] = met_order
+     occ = {t: [] for t in yard}
+     order = []
+     for t in yard:
+diff --git a/nekoatsume-pyxel/nekoatsume.py b/nekoatsume-pyxel/nekoatsume.py
+index e3e2998..8c125a9 100644
+--- a/nekoatsume-pyxel/nekoatsume.py
++++ b/nekoatsume-pyxel/nekoatsume.py
+@@ -2,10 +2,11 @@
+ ねこあつめ Pyxel 版(文字だけの UI)
+ 
+     実行:  pyxel run nekoatsume.py      (または python nekoatsume.py)
+-    Web :  https://kitao.github.io/pyxel/wasm/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume
++    Web :  https://kitao.github.io/pyxel/web/launcher/?run=<ユーザー名>.<リポジトリ名>.nekoatsume
+ 
+-操作は「タップ / クリック」が基本。リストはドラッグ(ホイール・↑↓キーも可)でスクロール。
+-1〜5 キーで下のタブを切り替えられる。ゲームのルールは game.py にある。
++操作は「タップ / クリック」が基本。リストはドラッグ(ホイール・↑↓キーも可)でスクロールし、右端のバーをつかむと一気に動かせる。
++文章は1文字ずつ出る。枠に収まらないときはページに分かれ、▼ が点滅したらタップ(Enter / Space)で次へ。
++1〜5 キーで下のタブを切り替えられる。ゲームのルールは game.py、アイテムと猫のデータは catalog.py にある。
+ """
+ 
+ import os
+@@ -31,6 +32,20 @@ ROW_H = FONT_SIZE + 6           # リストの行の高さ(フォントの実寸
+ LINE_H = FONT_SIZE + 3          # 複数行テキストの行送り(同上)
+ LOG_MAX = 30
+ TOAST_FRAMES = 75              # 30fps で約2.5秒
++TOAST_MAX_LINES = 3            # これより長いメッセージは、ページ送りのダイアログで出す
++
++# 文章の枠(ページ送り)まわり
++PAD_X = 6                      # 枠の内側の左右の余白
++PAD_Y = 4                      # 枠の内側の上下の余白
++CURSOR_H = FONT_SIZE           # 枠の下に必ず空ける高さ(ページ番号と「▼」の場所。文章はここに入り込まない)
++MSG_X, MSG_Y, MSG_W, MSG_H = 12, 28, SCREEN_W - 24, 192   # 長いメッセージのダイアログ
++
++# リストのスクロールバー
++BAR_W = 6                      # 見た目の幅
++BAR_HIT_W = 10                 # つかめる幅(右端のこの幅を触るとバーの操作になる)
++ROW_RIGHT = SCREEN_W - 20      # リスト行の右側の文字の右端(バーと重ならない位置)
++
++UNMET_KEY = "?unmet"           # 図鑑の「まだ出会っていない猫」の行
+ 
+ # パレット(Pyxel 標準 16 色)
+ C_BG, C_PANEL, C_TEXT, C_SUB, C_DIM = 0, 1, 7, 6, 13
+@@ -50,6 +65,9 @@ HELP_LINES = [
+     "エサがないと、猫は来ません。",
+     "",
+     "猫の累計滞在が3000分を超えると、お宝を持ってくることがあります。",
++    "",
++    "文章が長いときは、右下で ▼ が点滅します。画面をタップすると、次のページに進みます。",
++    "猫やアイテムが増えても、リストの右端(バー)をドラッグすれば、すばやく動かせます。",
+ ]
+ 
+ 
+@@ -70,6 +88,8 @@ def event_text(ev):
+         return "{0}がお宝を置いていった!".format(game.CATS[ev[1]]["name"])
+     if kind == "food_out":
+         return "エサがなくなった"
++    if kind == "met":
++        return "{0}と はじめて出会った!".format(game.CATS[ev[1]]["name"])
+     return ""
+ 
+ 
+@@ -122,6 +142,99 @@ class Typewriter:
+         return self.text[:self.revealed]
+ 
+ 
++class PagedText:
++    """長い文章を、決められた大きさの枠に収まるページに分け、1文字ずつ表示する。
++
++    - 枠の下には、ページ番号と「▼」を出すための余白(CURSOR_H)を必ず空ける。文章が枠の下にはみ出すことはない
++    - 次のページがあるとき、文字を出し終えると「▼」が点滅する。タップ(クリック)かキーで次のページへ進む
++    - 行の位置とページの割り方は set() のときに決まり、key が同じあいだは決め直さない
++      (伏せ字のときも、本当の文と同じ長さで組むので、あとで明かされても位置がずれない)
++    """
++
++    def __init__(self):
++        self.key = None
++        self.group = None
++        self.pages = [[]]          # [[(行, 色), ...], ...]
++        self.page = 0
++        self.tw = Typewriter()
++        self.w = 0
++        self.h = 0
++
++    def set(self, key, blocks, wrap, w, h, group=None):
++        """blocks は [(文章, 色), ...]。w, h は枠の大きさ。group が同じなら、ページと表示済みの状態を引き継ぐ。"""
++        if key == self.key:
++            return
++        keep = group is not None and group == self.group
++        self.key, self.group = key, group
++        self.w, self.h = w, h
++        max_lines = max(1, (h - 2 * PAD_Y - CURSOR_H) // LINE_H)
++        lines = []
++        for text, col in blocks:
++            for line in wrap(text, w - 2 * PAD_X - FONT_SIZE):
++                lines.append((line, col))
++        pages, cur = [], []
++        for item in lines:
++            if len(cur) >= max_lines:
++                pages.append(cur)
++                cur = []
++            if not cur and pages and item[0] == "":       # ページの頭に来た空行は捨てる
++                continue
++            cur.append(item)
++        if cur or not pages:
++            pages.append(cur)
++        self.pages = pages
++        self.page = min(self.page, len(pages) - 1) if keep else 0
++        self._start_page(skip=keep)
++
++    def _start_page(self, skip=False):
++        self.tw.text = None                               # 同じ文でも、最初から出し直す
++        self.tw.set_text("\n".join(line for line, _c in self.pages[self.page]))
++        if skip:
++            self.tw.skip()
++
++    @property
++    def typing(self):
++        return not self.tw.done
++
++    @property
++    def has_next(self):
++        return self.page < len(self.pages) - 1
++
++    def skip(self):
++        self.tw.skip()
++
++    def next_page(self):
++        if self.has_next:
++            self.page += 1
++            self._start_page()
++
++    def advance(self):
++        """タップ・キーで呼ぶ。文字送りの途中なら全部出す。出し終えていれば次のページへ。何かしたら True。"""
++        if not self.tw.done:
++            self.tw.skip()
++            return True
++        if self.has_next:
++            self.next_page()
++            return True
++        return False
++
++    def update(self, on_char=None):
++        self.tw.update(on_char)
++
++    def draw(self, app, x, y):
++        """(x, y) は枠の左上。文字は枠の余白の内側に並べる。"""
++        cols = [c for _line, c in self.pages[self.page]]
++        for i, line in enumerate(self.tw.visible.split("\n")):
++            if i < len(cols):
++                app.tx(x + PAD_X, y + PAD_Y + i * LINE_H, line, cols[i])
++        base = y + self.h - PAD_Y
++        if len(self.pages) > 1:
++            app.tx(x + PAD_X, base - FONT_SIZE, "{0}/{1}".format(self.page + 1, len(self.pages)), C_DIM)
++        if self.tw.done and self.has_next and (pyxel.frame_count // 12) % 2 == 0:
++            cx = x + self.w - PAD_X - 8
++            pyxel.tri(cx, base - 9, cx + 7, base - 9, cx + 3, base - 3, C_ACCENT)   # 逆三角(▼)の点滅
++
++
+ class App:
+     def __init__(self, run=True):
+         pyxel.init(SCREEN_W, SCREEN_H, title="ねこあつめ", fps=30)
+@@ -138,15 +251,21 @@ class App:
+         self.log_timer = 0
+         self.toast = None                      # {"col":..., "frames":...}
+         self.toast_tw = Typewriter()
+-        self.panel_tw = Typewriter()
+-        self.panel_key = None                  # 図鑑パネルの再生アニメが必要かの判定用
+-        self.panel_colors = []
+-        self.help_tw = Typewriter()
+-        self.help_tw.set_text(self._build_help_text())
++        self.cat_pager = PagedText()           # 図鑑の猫のプロフィール
++        self.shop_pager = PagedText()          # ショップの商品説明
++        self.help_pager = PagedText()          # ヘルプ
++        self.message = None                    # 長いメッセージのダイアログ {"pager": PagedText}
++        self.pager_regs = []                   # このフレームに描いたページ送りの枠 [(pager, x, y, w, h)]
+         self.modal = None                      # {"text":..., "yes": fn}
+         self.hits = []
+         self.areas = []
+         self.press = None
++        # ショップの表示条件(種別・絞り込み・並べ替え)
++        self.shop_kind = 0
++        self.shop_cat_off = 0                  # 種別タブが多いとき、先頭に出す種別の番号
++        self.shop_filter = 0
++        self.shop_sort = 0
++        self._shop_cache = (None, [])
+         self._init_sound()
+ 
+         self._init_save()
+@@ -235,11 +354,14 @@ class App:
+         return fallback if fallback is not None else s[:max(1, len(s) * max_w // max(1, self.tw(s)) - 1)] + "…"
+ 
+     def wrap(self, s, max_w):
++        """幅 max_w で折り返す。行頭に来てはいけない「。」「、」などは、1文字分だけ行末にぶら下げる。
++        そのため、行の幅は最大で max_w + FONT_SIZE になる(呼ぶ側は、その分の余白を見込んで max_w を決める)。"""
+         lines = []
+         for para in s.split("\n"):
+             line = ""
+             for ch in para:
+-                if self.tw(line + ch) > max_w and line and ch not in NO_LINE_START:
++                hang = ch in NO_LINE_START and self.tw(line + ch) <= max_w + FONT_SIZE
++                if self.tw(line + ch) > max_w and line and not hang:
+                     lines.append(line)
+                     line = ch
+                 else:
+@@ -248,7 +370,7 @@ class App:
+         return lines
+ 
+     def add_log(self, text):
+-        full = "\n".join(self.wrap(text, SCREEN_W - 20))
++        full = "\n".join(self.wrap(text, SCREEN_W - 32))
+         self.log.append({"full": full, "revealed": 0})
+         self.log = self.log[-LOG_MAX:]
+ 
+@@ -289,18 +411,25 @@ class App:
+             out = lines + out
+         return out
+ 
+-    def _build_help_text(self):
+-        lines = []
+-        for text in HELP_LINES:
+-            if text == "":
+-                lines.append("")
+-            else:
+-                lines.extend(self.wrap(text, SCREEN_W - 16))
+-        return "\n".join(lines)
+-
+     def show_toast(self, text, col=C_TEXT):
++        """短い知らせは画面の上にさっと出す。長いときはページ送りのダイアログにする(はみ出さないように)。"""
++        lines = self.wrap(text, SCREEN_W - 36)
++        if len(lines) > TOAST_MAX_LINES:
++            self.show_message(text, col)
++            return
+         self.toast = {"col": col, "frames": TOAST_FRAMES}
+-        self.toast_tw.set_text("\n".join(self.wrap(text, SCREEN_W - 24)))
++        self.toast_tw.set_text("\n".join(lines))
++
++    def show_message(self, text, col=C_TEXT):
++        """長い文章のダイアログ。ページに分け、▼ が点滅したらタップで進み、最後のページでタップすると閉じる。"""
++        pager = PagedText()
++        pager.set(("msg", text), [(text, col)], self.wrap, MSG_W, MSG_H)
++        self.message = {"pager": pager}
++        self.toast = None
++
++    def _advance_message(self):
++        if not self.message["pager"].advance():
++            self.message = None
+ 
+     # ------------------------------------------------------------ 入力
+     def _pointer(self):
+@@ -312,8 +441,9 @@ class App:
+     def _keys(self):
+         """キーボード入力(押した瞬間の集合)。テストでは差し替える。"""
+         keys = set()
+-        for name in ("KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_UP", "KEY_DOWN"):
+-            if pyxel.btnp(getattr(pyxel, name)):
++        for name in ("KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_UP", "KEY_DOWN",
++                     "KEY_PAGEUP", "KEY_PAGEDOWN", "KEY_HOME", "KEY_END", "KEY_RETURN", "KEY_SPACE"):
++            if hasattr(pyxel, name) and pyxel.btnp(getattr(pyxel, name)):
+                 keys.add(name)
+         return keys
+ 
+@@ -328,14 +458,28 @@ class App:
+         key, _ax, _ay, _aw, _ah, maxs = area
+         self.scroll[key] = min(max(self.scroll.get(key, 0) + dy, 0), maxs)
+ 
++    def _drag_bar(self, area, y):
++        """スクロールバーをつかんで動かす(押した位置にバーが来る)。猫や商品が何百あっても、すぐ目的の場所へ行ける。"""
++        key, _ax, ay, _aw, ah, maxs = area
++        total = maxs + ah
++        thumb = max(10, ah * ah // total)
++        ratio = (y - ay - thumb / 2) / max(1, ah - thumb)
++        self.scroll[key] = int(min(max(ratio, 0), 1) * maxs)
++
+     def handle_input(self):
+         mx, my, pressed, held, released, wheel = self._pointer()
+         if pressed:
+             area = self._area_at(mx, my)
+-            self.press = {"y": my, "area": area, "off": self.scroll.get(area[0], 0) if area else 0, "moved": False}
++            bar = bool(area and area[5] > 0 and mx >= area[1] + area[3] - BAR_HIT_W)
++            self.press = {"y": my, "area": area, "off": self.scroll.get(area[0], 0) if area else 0,
++                          "moved": bar, "bar": bar}
++            if bar:
++                self._drag_bar(area, my)
+         elif self.press and held and self.press["area"]:
+             p = self.press
+-            if p["moved"] or abs(my - p["y"]) > 4:
++            if p["bar"]:
++                self._drag_bar(p["area"], my)
++            elif p["moved"] or abs(my - p["y"]) > 4:
+                 p["moved"] = True
+                 key, _ax, _ay, _aw, _ah, maxs = p["area"]
+                 self.scroll[key] = min(max(p["off"] + p["y"] - my, 0), maxs)
+@@ -343,21 +487,53 @@ class App:
+             moved = self.press["moved"]
+             self.press = None
+             if not moved:
+-                if self._typing_active():
+-                    self._skip_typing()
+-                else:
+-                    self.tap(mx, my)
++                self._on_tap(mx, my)
+         if wheel:
+             area = self._area_at(mx, my)
+             if area:
+                 self._scroll_by(area, -wheel * ROW_H)
+ 
+         keys = self._keys()
++        if self.message:
++            if keys & {"KEY_RETURN", "KEY_SPACE"}:
++                self._advance_message()
++            return
+         for i, (name, _label) in enumerate(TABS):
+             if "KEY_%d" % (i + 1) in keys:
+                 self.goto(name)
+-        if self.areas and ("KEY_UP" in keys or "KEY_DOWN" in keys):
+-            self._scroll_by(self.areas[0], -ROW_H if "KEY_UP" in keys else ROW_H)
++        if keys & {"KEY_RETURN", "KEY_SPACE"}:
++            self._advance_key()
++        if self.areas:
++            area = self.areas[0]
++            page = max(1, area[4] // ROW_H) * ROW_H
++            for name, dy in (("KEY_UP", -ROW_H), ("KEY_DOWN", ROW_H), ("KEY_PAGEUP", -page),
++                             ("KEY_PAGEDOWN", page), ("KEY_HOME", -10 ** 9), ("KEY_END", 10 ** 9)):
++                if name in keys:
++                    self._scroll_by(area, dy)
++
++    def _on_tap(self, x, y):
++        """タップの振り分け。長いメッセージ > 文字送り中(全部出す) > ページ送りの枠(次のページ) > ふつうのボタン"""
++        if self.message:
++            self._advance_message()
++            return
++        if self._typing_active():
++            self._skip_typing()
++            return
++        for pager, rx, ry, rw, rh in reversed(self.pager_regs):
++            if rx <= x < rx + rw and ry <= y < ry + rh and pager.has_next:
++                pager.next_page()
++                return
++        self.tap(x, y)
++
++    def _advance_key(self):
++        """Enter / Space: タップと同じ(位置は問わない)。"""
++        if self._typing_active():
++            self._skip_typing()
++            return
++        for pager, _x, _y, _w, _h in reversed(self.pager_regs):
++            if pager.has_next:
++                pager.next_page()
++                return
+ 
+     def tap(self, x, y):
+         for hx, hy, hw, hh, fn, clip in reversed(self.hits):
+@@ -370,18 +546,26 @@ class App:
+     def goto(self, name):
+         if name != self.screen:
+             self.screen = name
+-            self.hits, self.areas, self.press = [], [], None
++            self.hits, self.areas, self.pager_regs, self.press = [], [], [], None
++            if name == "help":
++                self.help_pager.key = None          # ヘルプは開くたびに、はじめから読み上げる
+ 
+     # ------------------------------------------------------------ 一文字ずつ表示(タイプライター)
++    def _visible_pagers(self):
++        pagers = [p for p, _x, _y, _w, _h in self.pager_regs]
++        if self.message:
++            pagers.append(self.message["pager"])
++        return pagers
++
+     def _typing_active(self):
+         return (self._log_typing() or not self.toast_tw.done
+-                or not self.panel_tw.done or not self.help_tw.done)
++                or any(p.typing for p in self._visible_pagers()))
+ 
+     def _skip_typing(self):
+         self._skip_log()
+         self.toast_tw.skip()
+-        self.panel_tw.skip()
+-        self.help_tw.skip()
++        for p in self._visible_pagers():
++            p.skip()
+ 
+     # ------------------------------------------------------------ 更新
+     def update(self):
+@@ -389,16 +573,17 @@ class App:
+         if rep["ticks"]:
+             if rep["ticks"] <= 3:
+                 for ev in rep["events"]:
+-                    self.add_log(event_text(ev))
++                    text = event_text(ev)
++                    if text:
++                        self.add_log(text)
+             else:
+                 self.add_log("{0}分たちました。猫が{1}回遊びに来たよ".format(rep["ticks"], rep["visits"]))
+             self.save()
+         self.handle_input()
+         self._advance_log_typing()
+         self.toast_tw.update(self._play_type_sound)
+-        self.panel_tw.update(self._play_type_sound)
+-        if self.screen == "help":
+-            self.help_tw.update(self._play_type_sound)
++        for pager in self._visible_pagers():
++            pager.update(self._play_type_sound)
+         if self.toast:
+             if self.toast_tw.done:
+                 self.toast["frames"] -= 1
+@@ -419,6 +604,7 @@ class App:
+         self.hit(x, y, w, h, fn, clip)
+ 
+     def list_view(self, key, x, y, w, h, n, draw_row):
++        """縦に並べるリスト。見えている行だけ描くので、行が何千あっても軽い。右端のバーはドラッグで動かせる。"""
+         maxs = max(0, n * ROW_H - h)
+         off = min(max(self.scroll.get(key, 0), 0), maxs)
+         self.scroll[key] = off
+@@ -429,9 +615,11 @@ class App:
+             draw_row(i, y + i * ROW_H - int(off), (x, y, w, h))
+         pyxel.clip()
+         if maxs > 0:
+-            bar_h = max(8, h * h // (n * ROW_H))
++            total = maxs + h
++            bar_h = max(10, h * h // total)
+             bar_y = y + (h - bar_h) * off // maxs
+-            pyxel.rect(x + w - 2, int(bar_y), 2, bar_h, C_DIM)
++            pyxel.rect(x + w - BAR_W, y, BAR_W, h, C_PANEL)                    # 溝
++            pyxel.rect(x + w - BAR_W, int(bar_y), BAR_W, bar_h, C_DIM)         # つまみ
+ 
+     def draw_panel(self, x, y, w, h):
+         pyxel.rect(x, y, w, h, C_PANEL)
+@@ -439,7 +627,7 @@ class App:
+ 
+     # ------------------------------------------------------------ 描画
+     def draw(self):
+-        self.hits, self.areas = [], []
++        self.hits, self.areas, self.pager_regs = [], [], []
+         pyxel.cls(C_BG)
+         self.draw_header()
+         getattr(self, "draw_" + self.screen)()
+@@ -448,6 +636,8 @@ class App:
+             self.draw_toast()
+         if self.modal:
+             self.draw_modal()
++        if self.message:
++            self.draw_message()
+ 
+     def draw_header(self):
+         s = self.state
+@@ -473,10 +663,18 @@ class App:
+         for i, line in enumerate(self.toast_tw.visible.split("\n")):
+             self.tx(12, HEADER_H + 8 + i * LINE_H, line, col)
+ 
++    def draw_message(self):
++        self.hits, self.areas, self.pager_regs = [], [], []     # 背後の操作は無効にする
++        self.draw_panel(MSG_X, MSG_Y, MSG_W, MSG_H)
++        pager = self.message["pager"]
++        pager.draw(self, MSG_X, MSG_Y)
++        if pager.tw.done and not pager.has_next:
++            self.tx_right(MSG_X + MSG_W - PAD_X, MSG_Y + MSG_H - PAD_Y - FONT_SIZE, "タップで閉じる", C_DIM)
++
+     def draw_modal(self):
+-        self.hits, self.areas = [], []          # 背後の操作は無効にする
++        self.hits, self.areas, self.pager_regs = [], [], []     # 背後の操作は無効にする
+         m = self.modal
+-        lines = self.wrap(m["text"], 176)
++        lines = self.wrap(m["text"], 164)
+         h = len(lines) * LINE_H + 44
+         x, y, w = 24, 90, SCREEN_W - 48
+         self.draw_panel(x, y, w, h)
+@@ -558,7 +756,7 @@ class App:
+             self.show_toast("受け取れるお宝はありません", C_SUB)
+             return
+         texts = ["{0}が「{1}」をくれました!".format(game.CATS[c]["name"], game.CATS[c]["treasure"]) for c in got]
+-        self.show_toast(" ".join(texts), C_ACCENT)
++        self.show_toast("\n".join(texts), C_ACCENT)
+         self.save()
+ 
+     # ---- ショップ
+@@ -571,34 +769,95 @@ class App:
+         self.scroll.pop(screen, None)
+         self.selected[screen] = None
+ 
++    def arrow_button(self, x, y, w, h, direction, fn, enabled=True):
++        """◀ ▶ のボタン(フォントに依存しないよう、三角を自分で描く)。"""
++        self.button(x, y, w, h, "", fn, enabled=enabled)
++        col = C_TEXT if enabled else C_DIM
++        cx, cy = x + w // 2, y + h // 2
++        if direction < 0:
++            pyxel.tri(cx + 2, cy - 4, cx + 2, cy + 4, cx - 3, cy, col)
++        else:
++            pyxel.tri(cx - 2, cy - 4, cx - 2, cy + 4, cx + 3, cy, col)
++
++    def _shop_set_kind(self, i):
++        self.shop_kind = i
++        self.scroll.pop("shop", None)
++
++    def _shop_page_kinds(self, d):
++        n = len(game.CATEGORIES)
++        self.shop_cat_off = min(max(self.shop_cat_off + d, 0), max(0, n - 2))
++
++    def _shop_cycle(self, what):
++        if what == "filter":
++            self.shop_filter = (self.shop_filter + 1) % len(game.SHOP_FILTERS)
++        else:
++            self.shop_sort = (self.shop_sort + 1) % len(game.SHOP_SORTS)
++        self.scroll.pop("shop", None)
++
++    def _shop_strip(self):
++        """種別タブ(種別が3つ以上なら ◀ ▶ でめくる)と、絞り込み・並べ替えのボタン。"""
++        cats = game.CATEGORIES
++        n = len(cats)
++        self.shop_kind = min(self.shop_kind, n - 1)
++        y, h = 20, 16
++        if n <= 2:
++            slots, x0, w = list(range(n)), 8, 52
++        else:
++            off = min(self.shop_cat_off, n - 2)
++            slots, x0, w = [off, off + 1], 24, 40
++            self.arrow_button(8, y, 14, h, -1, lambda: self._shop_page_kinds(-1), enabled=off > 0)
++            self.arrow_button(x0 + 2 * (w + 2), y, 14, h, 1, lambda: self._shop_page_kinds(1), enabled=off + 2 < n)
++        for k, idx in enumerate(slots):
++            label = self.fit(cats[idx][1], w - 4)
++            self.button(x0 + k * (w + 2), y, w, h, label, lambda idx=idx: self._shop_set_kind(idx),
++                        active=(idx == self.shop_kind))
++        self.button(126, y, 58, h, game.SHOP_FILTERS[self.shop_filter][1], lambda: self._shop_cycle("filter"),
++                    active=self.shop_filter != 0)
++        self.button(186, y, 62, h, game.SHOP_SORTS[self.shop_sort][1], lambda: self._shop_cycle("sort"),
++                    active=self.shop_sort != 0)
++
++    def _shop_ids(self, kind):
++        """表示するアイテムID。条件と持ち物が変わったときだけ作り直す(商品が何千あっても毎フレームは数えない)。"""
++        s = self.state
++        filt = game.SHOP_FILTERS[self.shop_filter][0]
++        sort = game.SHOP_SORTS[self.shop_sort][0]
++        key = (game.CATALOG_VERSION, kind, filt, sort, s["s_fish"], s["g_fish"],
++               len(s["owned_toys"]), sum(s["food_stock"].values()))
++        if self._shop_cache[0] != key:
++            self._shop_cache = (key, game.shop_ids(s, kind, filt, sort))
++        return self._shop_cache[1]
++
+     def draw_shop(self):
+         s = self.state
+-        self.sub_tabs("shop")
+-        kind = "toy" if self.sub["shop"] == 0 else "food"
+-        ids = [k for k, v in game.ITEMS.items() if v["kind"] == kind]
++        self._shop_strip()
++        kind = game.CATEGORIES[self.shop_kind][0]
++        ids = self._shop_ids(kind)
++        owned_set = set(s["owned_toys"])
+ 
+         def row(i, ry, clip):
+             item_id = ids[i]
+             it = game.ITEMS[item_id]
+-            sel = self.selected["shop"] == item_id
+-            if sel:
++            if self.selected["shop"] == item_id:
+                 pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+-            owned = kind == "toy" and item_id in s["owned_toys"]
++            owned = kind == "toy" and item_id in owned_set
+             self.tx(12, ry + 2, it["name"], C_DIM if owned else C_TEXT)
+             if owned:
+-                self.tx_right(SCREEN_W - 14, ry + 2, "もっている", C_DIM)
++                self.tx_right(ROW_RIGHT, ry + 2, "もっている", C_DIM)
+             else:
+                 afford = s[it["cur"] + "_fish"] >= it["cost"]
+-                self.tx_right(SCREEN_W - 14, ry + 2, game.price_text(item_id), C_SUB if afford else C_BAD)
++                self.tx_right(ROW_RIGHT, ry + 2, game.price_text(item_id), C_SUB if afford else C_BAD)
+             self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("shop", item_id), clip)
+ 
+-        self.list_view("shop" + str(self.sub["shop"]), 8, 40, SCREEN_W - 16, 112, len(ids), row)
++        list_h = 96
++        if not ids:
++            self.tx(12, 46, "条件に合う商品はありません", C_SUB)
++        self.list_view("shop", 8, 40, SCREEN_W - 16, list_h, len(ids), row)
+ 
+         sel = self.selected["shop"]
+-        panel_y = 156
++        panel_y = 40 + list_h + 4
+         panel_h = TAB_Y - 4 - panel_y
+         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
+-        if sel:
++        if sel in game.ITEMS:
+             it = game.ITEMS[sel]
+             self.tx(14, panel_y + 4, "{0}  {1}".format(it["name"], game.price_text(sel)), C_ACCENT)
+             info = it["desc"]
+@@ -606,14 +865,17 @@ class App:
+                 info += "(庭を{0}マス使う)".format(it["size"])
+             if it["kind"] == "food":
+                 info += "(約{0}分もつ)".format(it["size"])
+-            desc_y = panel_y + 4 + LINE_H + 4
+-            max_desc_lines = max(1, (panel_h - (desc_y - panel_y)) // LINE_H)
+-            for i, line in enumerate(self.wrap(info, SCREEN_W - 36)[:max_desc_lines]):
+-                self.tx(14, desc_y + i * LINE_H, line, C_TEXT)
+-            owned = it["kind"] == "toy" and sel in s["owned_toys"]
++            # 説明の枠: 見出しの下から、パネルの下端まで。長い説明はページに分かれる
++            ty = panel_y + 4 + LINE_H
++            th = panel_y + panel_h - ty
++            self.shop_pager.set(("shop", sel), [(info, C_TEXT)], self.wrap, SCREEN_W - 16, th, group=None)
++            self.shop_pager.draw(self, 8, ty)
++            self.pager_regs.append((self.shop_pager, 8, ty, SCREEN_W - 16, th))
++            owned = it["kind"] == "toy" and sel in owned_set
+             self.button(SCREEN_W - 66, panel_y + 2, 52, 16, "買う", self.do_buy, enabled=not owned)
+         else:
+-            self.tx(14, panel_y + 8, "商品をタップすると説明が出ます", C_SUB)
++            self.tx(14, panel_y + 6, "商品をタップすると説明が出ます", C_SUB)
++            self.tx(14, panel_y + 6 + LINE_H, "({0}件)".format(len(ids)), C_DIM)
+ 
+     def select(self, screen, item_id):
+         self.selected[screen] = item_id
+@@ -650,11 +912,11 @@ class App:
+                 placed = item_id in s["yard"]
+                 extra = "({0}マス)".format(it["size"]) if it["size"] > 1 else ""
+                 self.tx(12, ry + 2, it["name"] + extra, C_TEXT)
+-                self.tx_right(SCREEN_W - 14, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
++                self.tx_right(ROW_RIGHT, ry + 2, "置いてある" if placed else "置く", C_GOOD if placed else C_SUB)
+                 fn = (lambda t=item_id: self.do_toggle_toy(t))
+             else:
+                 self.tx(12, ry + 2, "{0} ×{1}".format(it["name"], s["food_stock"][item_id]), C_TEXT)
+-                self.tx_right(SCREEN_W - 14, ry + 2, "置く", C_SUB)
++                self.tx_right(ROW_RIGHT, ry + 2, "置く", C_SUB)
+                 fn = (lambda f=item_id: self.do_set_food(f))
+             self.hit(8, ry, SCREEN_W - 16, ROW_H, fn, clip)
+ 
+@@ -693,107 +955,74 @@ class App:
+ 
+     # ---- おたから(猫の図鑑)
+     def draw_cats(self):
++        """図鑑は「出会った順」に並ぶ。猫がはじめて庭に来たときに、その順番の位置が決まる。
++        未発見の猫は1行(あと◯匹)にまとめるので、猫が何匹いても一覧は長くならない。"""
+         s = self.state
+-        ids = list(game.CATS)
+-        self.tx(8, 22, "猫たち(タップで詳しく)", C_SUB)
++        met = game.met_list(s)
++        total = len(game.CATS)
++        unmet = total - len(met)
++        n_rows = len(met) + (1 if unmet > 0 else 0)
++        self.tx(8, 22, "出会った猫 {0}/{1}".format(len(met), total), C_SUB)
+ 
+         def row(i, ry, clip):
+-            cid = ids[i]
+-            c = s["cats"][cid]
+-            sel = self.selected["cats"] == cid
+-            if sel:
+-                pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+-            met = c["met"]
+-            name = game.CATS[cid]["name"] if met else "？？？"
+-            self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + name, C_TEXT if met else C_DIM)
+-            if met:
+-                self.tx_right(SCREEN_W - 14, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
+-            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
++            if i < len(met):
++                cid = met[i]
++                c = s["cats"][cid]
++                if self.selected["cats"] == cid:
++                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
++                self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + game.CATS[cid]["name"], C_TEXT)
++                self.tx_right(ROW_RIGHT, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
++                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
++            else:
++                if self.selected["cats"] == UNMET_KEY:
++                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
++                self.tx(12, ry + 2, "？？？", C_DIM)
++                self.tx_right(ROW_RIGHT, ry + 2, "あと{0}匹".format(unmet), C_DIM)
++                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("cats", UNMET_KEY), clip)
+ 
+-        list_h = 5 * ROW_H
+-        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, len(ids), row)
++        list_h = 4 * ROW_H
++        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, n_rows, row)
+ 
+         panel_y = 38 + list_h + 6
+         panel_h = TAB_Y - 4 - panel_y
+         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
+         sel = self.selected["cats"]
+-        if not sel:
+-            self.panel_key = None
++        if sel == UNMET_KEY and unmet > 0:
++            blocks = [("？？？", C_DIM),
++                      ("まだ出会っていない猫が、あと{0}匹いる。庭に遊びに来ると、ここに載るよ。".format(unmet), C_TEXT)]
++            self.cat_pager.set(("unmet", unmet), blocks, self.wrap, SCREEN_W - 16, panel_h, group="unmet")
++        elif sel in s["cats"] and s["cats"][sel]["met"]:
++            c = s["cats"][sel]
++            key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"])
++            self.cat_pager.set(key, self._cat_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
++        else:
+             self.tx(14, panel_y + 6, "猫をタップしてね", C_SUB)
+             return
+-
+-        c = s["cats"][sel]
+-        key = (sel, c["met"], c["given_treasure"])
+-        if key != self.panel_key:
+-            self.panel_key = key
+-            self.panel_colors = self._build_cat_panel(sel)
+-        y = panel_y + 6
+-        for line, col in zip(self.panel_tw.visible.split("\n"), self.panel_colors):
+-            self.tx(14, y, line, col)
+-            y += LINE_H
+-
+-    def _build_cat_panel(self, sel):
+-        """図鑑パネルの表示内容を組み立て、タイプライターにセットする。戻り値は行ごとの色。"""
+-        spec, c = game.CATS[sel], self.state["cats"][sel]
+-        met = c["met"]
+-        lines, colors = [], []
+-
+-        # 見出しの分だけ縦の余裕がないので、空行は入れずに詰めて並べる
+-        lines.append(spec["name"] if met else "？？？")
+-        colors.append(C_ACCENT if met else C_DIM)
+-
+-        if met:
+-            desc_lines = self.wrap(spec["desc"], SCREEN_W - 36)[:2]
+-        else:
+-            desc_lines = self.wrap("まだ出会っていない猫。庭に遊びに来ると正体がわかるよ。", SCREEN_W - 36)[:2]
+-        for line in desc_lines:
+-            lines.append(line)
+-            colors.append(C_TEXT)
+-
+-        if met:
+-            now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
+-            lines.append("いま: " + now)
+-        else:
+-            lines.append("いま: ？？？")
+-        colors.append(C_SUB)
+-
+-        if met and c["given_treasure"]:
+-            colors.append(C_ACCENT)
+-            lines.append("お宝:「{0}」".format(spec["treasure"]))
+-        elif met:
+-            colors.append(C_DIM)
+-            lines.append("お宝: ？？？(累計3000分〜)")
+-        else:
+-            colors.append(C_DIM)
+-            lines.append("お宝: ？？？")
+-
+-        self.panel_tw.set_text("\n".join(lines))
+-        return colors
++        self.cat_pager.draw(self, 8, panel_y)
++        self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
++
++    def _cat_blocks(self, cid):
++        """プロフィールの中身。伏せ字(まだ明かされていないお宝)は、本当の文と同じ長さの「？」で組む。
++        こうすると、あとで明かされても行の数や位置が変わらない。"""
++        spec, c = game.CATS[cid], self.state["cats"][cid]
++        now = "{0}で遊んでいる".format(game.TOYS[c["toy"]]["name"]) if c["in_yard"] else "今はいない"
++        treasure = spec["treasure"] if c["given_treasure"] else "？" * len(spec["treasure"])
++        return [(spec["name"], C_ACCENT),
++                (spec["desc"], C_TEXT),
++                ("いま: " + now, C_SUB),
++                ("お宝:「{0}」".format(treasure), C_ACCENT if c["given_treasure"] else C_DIM)]
+ 
+     # ---- ヘルプ
+     def draw_help(self):
+-        x, y, w = 8, 24, SCREEN_W - 16
+-        avail_h = TAB_Y - 4 - y
+-        total_lines = self.help_tw.text.split("\n")
+-        footer = "自動でセーブしています" if self.save_path else "この環境ではセーブできません"
+-        content_h = len(total_lines) * LINE_H + LINE_H + 6
+-
+-        maxs = max(0, content_h - avail_h)
+-        off = min(max(self.scroll.get("help", 0), 0), maxs)
+-        self.scroll["help"] = off
+-        self.areas.append(("help", x, y, w, avail_h, maxs))
+-
+-        pyxel.clip(x, y, w, avail_h)
+-        for i, line in enumerate(self.help_tw.visible.split("\n")):
+-            self.tx(x, y + i * LINE_H - off, line, C_TEXT)
+-        if self.help_tw.done:
+-            self.tx(x, y + len(total_lines) * LINE_H + 6 - off, footer, C_GOOD if self.save_path else C_BAD)
+-        pyxel.clip()
+-
+-        if maxs > 0:
+-            bar_h = max(8, avail_h * avail_h // content_h)
+-            bar_y = y + (avail_h - bar_h) * off // maxs
+-            pyxel.rect(x + w - 2, int(bar_y), 2, bar_h, C_DIM)
++        """ヘルプもタイプライターで読み上げる。長いぶんはページに分かれ、▼ が点滅したらタップで次へ。"""
++        x, y, w = 0, HEADER_H + 2, SCREEN_W
++        h = TAB_Y - 4 - y
++        blocks = [(text, C_TEXT) for text in HELP_LINES]
++        blocks.append(("", C_TEXT))
++        blocks.append(("自動でセーブしています", C_GOOD) if self.save_path else ("この環境ではセーブできません", C_BAD))
++        self.help_pager.set(("help", bool(self.save_path)), blocks, self.wrap, w, h)
++        self.help_pager.draw(self, x, y)
++        self.pager_regs.append((self.help_pager, x, y, w, h))
+ 
+ 
+ if not os.environ.get("NEKOATSUME_NO_AUTORUN"):   # テストから import するときだけ自動起動を止める
+diff --git a/nekoatsume-pyxel/test_game.py b/nekoatsume-pyxel/test_game.py
+index 917ae65..31b7b6c 100644
+--- a/nekoatsume-pyxel/test_game.py
++++ b/nekoatsume-pyxel/test_game.py
+@@ -62,7 +62,7 @@ def test_large_condo_is_placeable():
+ def test_place_remove_and_occupants_pay_out():
+     s = stocked(("rubber_ball",))
+     rng = random.Random(1)
+-    s["cats"]["gordo"].update(in_yard=True, toy="rubber_ball", time_in_yard=10)
++    game.ensure_cat(s, "gordo").update(in_yard=True, toy="rubber_ball", time_in_yard=10)
+     s["occ"]["rubber_ball"] = ["gordo"]
+     assert game.remove_toy(s, "rubber_ball", rng).ok
+     assert not s["cats"]["gordo"]["in_yard"] and s["cats"]["gordo"]["total_time"] == 10
+@@ -153,12 +153,12 @@ def test_invariants_hold_over_long_random_play():
+ def test_strong_cat_can_push_weaker():
+     s = stocked(("rubber_ball",))
+     rng = random.Random(3)
+-    s["cats"]["gordo"].update(in_yard=True, toy="rubber_ball", time_in_yard=5)
++    game.ensure_cat(s, "gordo").update(in_yard=True, toy="rubber_ball", time_in_yard=5)
+     s["occ"]["rubber_ball"] = ["gordo"]
+     events = []
+     game._try_push(s, "tarawa", "rubber_ball", rng, events)     # tarawa の強さ 6 > 5
+     assert s["occ"]["rubber_ball"] == ["tarawa"]
+-    assert [e[0] for e in events] == ["leave", "arrive"]
++    assert [e[0] for e in events] == ["leave", "met", "arrive"]      # 初めて庭に来た猫には "met" が付く
+     events = []
+     game._try_push(s, "felix", "rubber_ball", rng, events)      # 5 < 6 なので押し出せない
+     assert s["occ"]["rubber_ball"] == ["tarawa"] and events == []
+@@ -166,7 +166,7 @@ def test_strong_cat_can_push_weaker():
+ 
+ def test_treasure_when_joining_after_3000_minutes():
+     s = stocked(("rubber_ball",))
+-    s["cats"]["felix"]["total_time"] = 3001
++    game.ensure_cat(s, "felix")["total_time"] = 3001
+     ev = []
+     game._join(s, "felix", "rubber_ball", ev)
+     assert s["pending_treasures"] == ["felix"] and ("treasure", "felix") in ev
+@@ -178,7 +178,7 @@ def test_treasure_when_joining_after_3000_minutes():
+ def test_launch_bonus():
+     s = fresh()
+     assert game.launch_bonus(s, T0, T0 + 999, random.Random(1)) is None   # 誰も遊んでいない
+-    s["cats"]["pukka"]["total_time"] = 100
++    game.ensure_cat(s, "pukka")["total_time"] = 100
+ 
+     class Always(random.Random):
+         def random(self):
+@@ -243,7 +243,7 @@ def test_loads_repairs_inconsistent_data():
+     d["owned_toys"] = ["rubber_ball", "ghost"]
+     d["s_fish"] = "abc"
+     d["food"] = "unknown_food"
+-    d["cats"]["gordo"].update(in_yard=True, toy="paper_bag")   # 庭にないおもちゃで遊んでいる
++    d["cats"]["gordo"] = {"in_yard": True, "toy": "paper_bag"}   # 庭にないおもちゃで遊んでいる
+     d["pending_money"] = [["gordo", 5, "s"], ["ghost", 1, "s"], "bad"]
+     r = game.loads(json.dumps(d))
+     assert r["yard"] == ["rubber_ball"] and r["owned_toys"] == ["rubber_ball"]
+@@ -257,3 +257,153 @@ def test_catalog_is_consistent():
+     for it in game.ITEMS.values():
+         assert it["cur"] in ("s", "g") and it["cost"] > 0 and it["size"] >= 1
+         assert it["size"] <= game.SPACE or it["kind"] == "food"
++
++
++
++# ---------------------------------------------------------------- 猫の状態は「出会った分だけ」+ 図鑑の並び
++def test_state_holds_only_met_cats_in_discovery_order():
++    s = stocked()
++    assert s["cats"] == {} and s["met_order"] == []            # 誰にも会っていなければ空
++    rng = random.Random(3)
++    ev = []
++    for _ in range(400):
++        if s["food_remaining"] == 0:
++            s["food_stock"]["dry_food"] = 1
++            game.set_food(s, "dry_food")
++        game.tick(s, rng, ev)
++    met_events = [e[1] for e in ev if e[0] == "met"]
++    assert met_events == s["met_order"] and set(s["cats"]) == set(s["met_order"])
++    assert all(c["met"] for c in s["cats"].values())
++    assert game.met_list(s) == s["met_order"] and len(set(met_events)) == len(met_events)   # 重複なし
++
++
++def test_met_order_survives_roundtrip_and_sanitize():
++    s = stocked()
++    for cid in ("felix", "gordo", "pukka"):
++        game._join(s, cid, "rubber_ball", [])
++        game._leave(s, cid, random.Random(1), [])
++    assert s["met_order"] == ["felix", "gordo", "pukka"]
++    r = game.loads(game.dumps(s))
++    assert r["met_order"] == ["felix", "gordo", "pukka"]
++    d = json.loads(game.dumps(s))
++    d["met_order"] = ["pukka", "ghost", "pukka", "felix"]     # 不正な id・重複・抜けがあっても直る
++    r = game.loads(json.dumps(d))
++    assert r["met_order"] == ["pukka", "felix", "gordo"]
++
++
++def test_old_save_with_every_cat_is_migrated_to_met_only():
++    """旧形式(全猫ぶんの状態がある)のセーブを読むと、出会った猫だけになる。"""
++    old = json.loads(game.dumps(fresh()))
++    old["cats"] = {cid: {"in_yard": False, "toy": "", "time_in_yard": 0, "total_time": 0,
++                         "given_treasure": False, "met": False} for cid in game.CATS}
++    old["cats"]["peebles"].update(met=True, total_time=50)
++    old["cats"]["gordo"].update(total_time=10)                # met が無くても遊んだ形跡があれば出会い済み
++    del old["cats"]["gordo"]["met"]
++    old.pop("met_order", None)
++    r = game.loads(json.dumps(old))
++    assert set(r["cats"]) == {"peebles", "gordo"}
++    assert r["met_order"] == ["gordo", "peebles"]             # 順番が不明なぶんは、保存されていた順
++
++
++# ---------------------------------------------------------------- ショップの絞り込み・並べ替え
++def test_shop_ids_default_is_catalog_order():
++    s = fresh()
++    assert game.shop_ids(s, "toy") == list(game.TOYS)
++    assert game.shop_ids(s, "food") == list(game.FOODS)
++    assert game.shop_ids(s, "nothing") == []
++
++
++def test_shop_ids_filters():
++    s = fresh()                                               # 銀300 金10
++    buyable = game.shop_ids(s, "toy", "buyable")
++    assert "rubber_ball" in buyable and "laser_pointer" not in buyable      # 金125は買えない
++    assert all(game.ITEMS[i]["cost"] <= s[game.ITEMS[i]["cur"] + "_fish"] for i in buyable)
++    game.buy(s, "rubber_ball")
++    assert "rubber_ball" not in game.shop_ids(s, "toy", "buyable")
++    assert "rubber_ball" not in game.shop_ids(s, "toy", "unowned")
++    assert "rubber_ball" in game.shop_ids(s, "toy", "all")
++    assert "dry_food" in game.shop_ids(s, "food", "buyable")   # エサは持っていても何個でも買える
++    game.buy(s, "dry_food")
++    assert "dry_food" not in game.shop_ids(s, "food", "unowned")
++    assert "dry_food" in game.shop_ids(s, "food", "buyable")
++
++
++def test_shop_ids_sort_puts_silver_before_gold_then_by_price():
++    s = fresh()
++    asc = game.shop_ids(s, "toy", sort="price_asc")
++    keys = [(0 if game.ITEMS[i]["cur"] == "s" else 1, game.ITEMS[i]["cost"]) for i in asc]
++    assert keys == sorted(keys) and sorted(asc) == sorted(game.TOYS)
++    assert game.shop_ids(s, "toy", sort="price_desc") == list(reversed(asc)) or \
++        [(0 if game.ITEMS[i]["cur"] == "s" else 1, game.ITEMS[i]["cost"])
++         for i in game.shop_ids(s, "toy", sort="price_desc")] == sorted(keys, reverse=True)
++
++
++# ---------------------------------------------------------------- 猫1000匹・商品数百種類でも動く
++@pytest.fixture
++def big_catalog():
++    import catalog
++    toys = [("toy%03d" % i, "おもちゃ%d" % i, 5 + i % 90, "s" if i % 3 else "g", 1 + (i % 7 == 0) * 2, "説明%d" % i)
++            for i in range(500)]
++    foods = [("food%02d" % i, "エサ%d" % i, 2 + i, "s", 300, "エサの説明") for i in range(40)]
++    cats = [("cat%04d" % i, "猫%d" % i, "紹介文%d" % i, "お宝%d" % i) for i in range(1000)]
++    game.load_catalog(toys, foods, cats, catalog.CATEGORIES)
++    yield
++    game.load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
++
++
++def test_big_catalog_loads_and_validates(big_catalog):
++    assert len(game.CATS) == 1000 and len(game.TOYS) == 500 and len(game.FOODS) == 40
++    assert len(game.shop_ids(fresh(), "toy")) == 500
++    import catalog
++    with pytest.raises(ValueError):
++        game.load_catalog(catalog.TOYS + catalog.TOYS[:1], catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
++    with pytest.raises(ValueError):
++        game.load_catalog([("huge", "巨大", 5, "s", 99, "庭に入らない")], [], [], catalog.CATEGORIES)
++    assert len(game.CATS) == 1000                              # 失敗した読み込みで、今のデータは壊れない
++
++
++def test_big_catalog_catchup_is_fast_and_save_stays_small(big_catalog):
++    import time as _t
++    s = fresh()
++    for t in ("toy001", "toy002", "toy003", "toy004", "toy005"):
++        s["owned_toys"].append(t)
++        assert game.place_toy(s, t).ok
++    s["food_stock"]["food00"] = 1
++    game.set_food(s, "food00")
++    t0 = _t.perf_counter()
++    r = game.advance(s, T0 + 60 * 300, random.Random(1))           # エサ1個ぶん(=判定が走る最大の長さ)
++    game.advance(s, T0 + 60 * 60 * 24 * 30, random.Random(2))      # 30日離れていた
++    dt = _t.perf_counter() - t0
++    assert dt < 3.0, dt                                            # 実測はこの1/10ほど
++    assert r["visits"] > 0
++    size = len(game.dumps(s))
++    naive = size + (1000 - len(s["cats"])) * 130                   # 全員ぶんの状態を持った場合の見積もり
++    assert size < naive / 4, (size, naive)                         # 出会った猫だけなので、ずっと小さい
++    assert len(s["cats"]) == len(s["met_order"]) < 300
++
++
++def test_big_catalog_arrivals_are_spread_over_many_cats(big_catalog):
++    """猫が多いとき、カタログの先頭の猫ばかりが席を取らない(候補をシャッフルしている)。"""
++    s = fresh()
++    for t in ("toy001", "toy002", "toy003", "toy004", "toy005"):
++        s["owned_toys"].append(t)
++        game.place_toy(s, t)
++    rng = random.Random(5)
++    for _ in range(600):
++        if s["food_remaining"] == 0:
++            s["food_stock"]["food00"] = 1
++            game.set_food(s, "food00")
++        game.tick(s, rng)
++    met = game.met_list(s)
++    assert len(met) > 100
++    first_half = sum(1 for c in met if int(c[3:]) < 500)
++    assert 0.3 < first_half / len(met) < 0.7                      # 前半・後半の猫がほぼ半々
++
++
++def test_big_catalog_shop_is_cheap_to_query(big_catalog):
++    import time as _t
++    s = fresh()
++    t0 = _t.perf_counter()
++    for _ in range(200):
++        game.shop_ids(s, "toy", "buyable", "price_asc")
++    assert _t.perf_counter() - t0 < 1.0
+diff --git a/nekoatsume-pyxel/tools/ui_smoke.py b/nekoatsume-pyxel/tools/ui_smoke.py
+index dbf6d96..57be821 100644
+--- a/nekoatsume-pyxel/tools/ui_smoke.py
++++ b/nekoatsume-pyxel/tools/ui_smoke.py
+@@ -1,22 +1,31 @@
+-"""UI のスモークテスト(タップ操作を再現して画面遷移・購入・配置・保存を確認する)。
++"""UI のスモークテスト(タップ操作を再現して、画面遷移・購入・配置・ページ送り・大量データを確認する)。
+ 
+ 実行: LIBGL_ALWAYS_SOFTWARE=1 xvfb-run -a python3 tools/ui_smoke.py   (画面のない Linux の場合)
+       python3 tools/ui_smoke.py                                        (デスクトップ環境の場合)
+ スクリーンショットは環境変数 SHOT_DIR に出力される。
+ """
+-import os, sys, shutil, time
++import os
++import shutil
++import sys
++import tempfile
++
+ os.environ["NEKOATSUME_NO_AUTORUN"] = "1"
+-os.environ["SDL_AUDIODRIVER"] = "dummy"
+-SAVE_DIR = os.path.join(__import__('tempfile').gettempdir(), 'nekoatsume_ui_smoke')
++SAVE_DIR = os.path.join(tempfile.gettempdir(), "nekoatsume_ui_smoke")
+ shutil.rmtree(SAVE_DIR, ignore_errors=True)
+ os.environ["NEKOATSUME_SAVE_DIR"] = SAVE_DIR
+ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ sys.path.insert(0, ROOT)
+ os.chdir(ROOT)
+-import pyxel, nekoatsume, game
+-SHOT_DIR = os.environ.get('SHOT_DIR', os.path.join(SAVE_DIR, 'shots'))
+ 
+-app = nekoatsume.App(run=False)
++import pyxel                     # noqa: E402
++import catalog                   # noqa: E402
++import game                      # noqa: E402
++import nekoatsume as N           # noqa: E402
++
++SHOT_DIR = os.environ.get("SHOT_DIR", os.path.join(SAVE_DIR, "shots"))
++os.makedirs(SHOT_DIR, exist_ok=True)
++
++app = N.App(run=False)
+ T = [1_000_000.0]
+ app.state["last_tick"] = app.state["last_seen"] = T[0]
+ app.clock = lambda: T[0]
+@@ -26,98 +35,247 @@ keys = set()
+ app._pointer = lambda: (ptr["x"], ptr["y"], ptr["pressed"], ptr["held"], ptr["released"], ptr["wheel"])
+ app._keys = lambda: set(keys)
+ 
++
++def check_layout():
++    """どのページも、枠の下端(ページ番号と▼の余白のぶん)に食い込んでいないこと。1行が枠の幅を超えていないこと。"""
++    pagers = [p for p, *_ in app.pager_regs]
++    if app.message:
++        pagers.append(app.message["pager"])
++    for p in pagers:
++        for page in p.pages:
++            assert N.PAD_Y + len(page) * N.LINE_H <= p.h - N.PAD_Y - N.CURSOR_H, (p.key, len(page), p.h)
++            for line, _c in page:
++                assert app.tw(line) <= p.w - 2 * N.PAD_X, (p.key, line)
++
++
+ def frame():
+-    app.update(); app.draw()
++    app.update()
++    app.draw()
++    check_layout()
++
+ 
+ def shot(name):
+-    os.makedirs(SHOT_DIR, exist_ok=True)
+-    pyxel.screen.save(os.path.join(SHOT_DIR, "%s.png" % name), 2)
++    pyxel.screen.save(os.path.join(SHOT_DIR, name + ".png"), 2)
++
++
++def settle():
++    app._skip_typing()
+ 
+-def click(x, y):
+-    ptr.update(x=x, y=y, pressed=True, held=True, released=False); frame()
+-    ptr.update(pressed=False, held=False, released=True); frame()
+-    ptr.update(released=False); frame()
+ 
+-def drag(x, y0, y1, steps=6):
+-    ptr.update(x=x, y=y0, pressed=True, held=True, released=False); frame()
++def click(x, y, settle_first=True):
++    if settle_first:
++        settle()
++    ptr.update(x=x, y=y, pressed=True, held=True, released=False)
++    frame()
++    ptr.update(pressed=False, held=False, released=True)
++    frame()
++    ptr.update(released=False)
++    frame()
++
++
++def drag(x, y0, y1, steps=8):
++    settle()
++    ptr.update(x=x, y=y0, pressed=True, held=True, released=False)
++    frame()
+     ptr.update(pressed=False)
+     for i in range(1, steps + 1):
+-        ptr["y"] = y0 + (y1 - y0) * i // steps; frame()
+-    ptr.update(held=False, released=True); frame()
+-    ptr.update(released=False); frame()
++        ptr["y"] = y0 + (y1 - y0) * i // steps
++        frame()
++    ptr.update(held=False, released=True)
++    frame()
++    ptr.update(released=False)
++    frame()
+ 
+-frame(); frame()
++
++def tab(name):
++    i = [n for n, _l in N.TABS].index(name)
++    click(i * (N.SCREEN_W // len(N.TABS)) + 25, N.TAB_Y + 10)
++    assert app.screen == name, (app.screen, name)
++
++
++def row_y(i, top, scroll=0):
++    return top + i * N.ROW_H + N.ROW_H // 2 - scroll
++
++
++BUY = (N.SCREEN_W - 66 + 26, 40 + 96 + 4 + 10)      # ショップの「買う」ボタン
++frame()
++frame()
+ shot("01_yard_start")
+ 
+-# ショップ
+-click(64, 240)                       # タブ「ショップ」
+-assert app.screen == "shop", app.screen
+-frame(); shot("02_shop")
+-click(100, 48)                       # 1行目=ゴムボール
++# ------------------------------------------------------------ ショップ
++tab("shop")
++click(30, row_y(0, 40))
+ assert app.selected["shop"] == "rubber_ball"
+-click(SCREEN := 256 - 66 + 10, 166)  # 買う
++settle(); frame(); shot("02_shop")
++click(*BUY)
+ assert app.state["owned_toys"] == ["rubber_ball"], app.state["owned_toys"]
+-click(100, 48 + 16); click(256 - 56, 166)   # キラキラボール(金5)
+-click(100, 48 + 32); click(256 - 56, 166)   # 毛糸玉
+-print("owned:", app.state["owned_toys"], "silver", app.state["s_fish"], "gold", app.state["g_fish"])
+-shot("03_shop_bought")
+-# ドラッグでスクロール
+-before = app.scroll.get("shop0", 0)
+-drag(100, 120, 60)
+-after = app.scroll.get("shop0", 0)
+-print("scroll", before, "->", after); assert after > before
+-shot("04_shop_scrolled")
+-# エサタブ
+-click(8 + 68 + 10, 28)
+-assert app.sub["shop"] == 1
+-click(100, 48)                       # ドライフード
+-click(256 - 56, 166)
++click(30, row_y(1, 40)); click(*BUY)                       # キラキラボール(金5)
++click(30, row_y(2, 40)); click(*BUY)                       # 毛糸玉
++assert len(app.state["owned_toys"]) == 3
++
++click(126 + 29, 28)                                        # 絞り込み: すべて → 買える
++assert app.shop_filter == 1
++ids = app._shop_ids("toy")
++assert "rubber_ball" not in ids and all(game.ITEMS[i]["cost"] <= app.state[game.ITEMS[i]["cur"] + "_fish"] for i in ids)
++click(186 + 31, 28)                                        # 並べ替え: 標準 → 安い順
++assert app.shop_sort == 1
++settle(); frame(); shot("03_shop_filtered_sorted")
++click(126 + 29, 28); click(126 + 29, 28)                   # 買える → 未所持 → すべて
++click(186 + 31, 28); click(186 + 31, 28)                   # 安い順 → 高い順 → 標準
++assert (app.shop_filter, app.shop_sort) == (0, 0)
++
++drag(100, 120, 60)                                         # リストをドラッグでスクロール
++assert app.scroll["shop"] > 0
++click(8 + 26 + 54, 28)                                     # 「エサ」タブ
++assert game.CATEGORIES[app.shop_kind][0] == "food"
++click(30, row_y(0, 40)); click(*BUY)
+ assert app.state["food_stock"] == {"dry_food": 1}, app.state["food_stock"]
+-shot("05_shop_food")
++shot("04_shop_food")
+ 
+-# もちもの
+-click(3 * 51 // 2 * 2 + 90, 240) if False else click(2 * 51 + 20, 240)
+-assert app.screen == "bag", app.screen
+-click(100, 48); click(100, 64); click(100, 80)   # 3個置く
+-print("yard:", app.state["yard"])
++# ------------------------------------------------------------ もちもの → 庭
++tab("bag")
++for i in range(3):
++    click(30, row_y(i, 40))
+ assert len(app.state["yard"]) == 3
+-click(8 + 68 + 10, 28)                # エサ
+-click(100, 48)                        # ドライフードを置く
++click(8 + 32 + 68, 28)                                     # エサのタブ
++click(30, row_y(0, 40))
+ assert app.state["food"] == "dry_food"
+-shot("06_bag_food")
+-
+-# 経過時間 → 猫が来る
+-click(20, 240)
+-for step in range(90):
++shot("05_bag")
++tab("yard")
++for _ in range(120):
+     T[0] += 60
+     frame()
+-shot("07_yard_playing")
+-print("cats in yard:", game.cats_in_yard(app.state), "pending", len(app.state["pending_money"]))
+-print("log:", app.log[-3:])
++settle(); frame(); shot("06_yard_playing")
++assert game.met_list(app.state), "猫が来ているはず"
+ n = len(app.state["pending_money"])
+-click(60, 204)                        # さかなを受け取る
+-print("wallet after collect: silver", app.state["s_fish"], "gold", app.state["g_fish"], "pending", len(app.state["pending_money"]))
++click(8 + 59, 194 + 10)                                    # さかなを受け取る
+ assert app.state["pending_money"] == [] or n == 0
+-shot("08_collected")
+-
+-# エサの置き換え確認モーダル
+-app.state["food_stock"]["dry_food"] = 1
+-click(2 * 51 + 20, 240); click(8 + 68 + 10, 28); click(100, 48)
+-assert app.modal, "確認モーダルが出るはず"
+-shot("09_modal")
+-click(78, 142)                        # モーダルの「はい」
+-assert app.modal is None and app.state['food_remaining'] == 300, (app.modal, app.state['food_remaining'])
+-frame(); shot("10_after_modal")
+-
+-# 猫
+-click(3 * 51 + 20, 240); click(100, 46)
+-assert app.screen == "cats" and app.selected["cats"] == "gordo"
+-shot("11_cats")
+-click(4 * 51 + 20, 240); shot("12_help")
+-
+-# セーブ・ロード
+-assert os.path.exists("/tmp/savetest/save.json")
+-s2 = game.loads(open("/tmp/savetest/save.json", encoding="utf-8").read())
+-assert s2["owned_toys"] == app.state["owned_toys"]
+-print("save OK, bytes:", os.path.getsize("/tmp/savetest/save.json"))
++
++# ------------------------------------------------------------ 図鑑(出会った順)
++tab("cats")
++met = game.met_list(app.state)
++click(30, row_y(0, 38))
++assert app.selected["cats"] == met[0]
++settle(); frame(); shot("07_cats")
++assert app.cat_pager.pages and app.cat_pager.key[1] == met[0]
++
++# ------------------------------------------------------------ ヘルプ(タイプライター + ページ送り)
++tab("help")
++p = app.help_pager
++assert p.typing, "ヘルプは1文字ずつ出るはず"
++click(100, 100, settle_first=False)                        # 文字送り中のタップ: 全部出す(ページはそのまま)
++assert not p.typing and p.page == 0
++n_pages = len(p.pages)
++print("help pages:", n_pages)
++frame(); shot("08_help_p1")
++if n_pages > 1:
++    click(100, 100, settle_first=False)                    # 出し終えたあとのタップ: 次のページ
++    assert p.page == 1
++    settle(); frame(); shot("09_help_p2")
++tab("yard")
++tab("help")
++assert p.page == 0 and p.typing                            # 開き直すと、また最初から
++
++# ------------------------------------------------------------ 長い文章でも、枠からはみ出さない
++tab("cats")
++long_desc = "とても長い紹介文。" * 40
++game.load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS + [("longcat", "ながいねこ", long_desc, "お" * 60)], catalog.CATEGORIES)
++c = game.ensure_cat(app.state, "longcat")
++c.update(met=True, total_time=5)
++app.state["met_order"].append("longcat")
++frame()
++area = [a for a in app.areas if a[0] == "cats"][0]
++app.scroll["cats"] = area[5]                                 # いちばん下までスクロールしておく
++frame()
++idx = game.met_list(app.state).index("longcat")
++click(30, row_y(idx, 38, app.scroll["cats"]))
++assert app.selected["cats"] == "longcat", app.selected
++settle(); frame()
++pg = app.cat_pager
++print("long cat pages:", len(pg.pages))
++assert len(pg.pages) >= 3
++shot("10_cats_long_p1")
++before = pg.page
++pg._start_page()                                           # 1文字ずつ出ている最中にする
++assert pg.typing
++click(100, 130, settle_first=False)                        # 文字送り中のタップ: 全部出す(ページは進まない)
++assert pg.page == before and not pg.typing
++click(100, 130)                                            # 出し終え: 次のページ
++assert pg.page == before + 1
++settle(); frame(); shot("11_cats_long_p2")
++
++# 伏せ字(お宝未取得)と明かした後で、行数・位置が同じ
++lines_masked = [len(pg_) for pg_ in app.cat_pager.pages]
++c["given_treasure"] = True
++frame()
++lines_revealed = [len(pg_) for pg_ in app.cat_pager.pages]
++assert lines_masked == lines_revealed, (lines_masked, lines_revealed)
++
++# ------------------------------------------------------------ 長いメッセージ
++app.show_toast("とても長いお知らせ。" * 30)
++assert app.message is not None and app.toast is None
++frame(); settle(); frame(); shot("12_message_p1")
++guard = 0
++while app.message and guard < 30:
++    click(100, 100)
++    guard += 1
++assert app.message is None, "最後のページのタップで閉じるはず"
++app.show_toast("短いお知らせ")
++assert app.message is None and app.toast is not None
++
++# ------------------------------------------------------------ 猫1000匹・商品数百種類
++toys = [("toy%03d" % i, "おもちゃ%d" % i, 5 + i % 90, "s" if i % 3 else "g", 1, "説明%d" % i) for i in range(600)]
++cats = [("cat%04d" % i, "猫%d" % i, "紹介文%d" % i, "お宝%d" % i) for i in range(1000)]
++categories = [("toy", "おもちゃ"), ("food", "エサ"), ("toy2", "とても長い種別名"), ("toy3", "種別4"), ("toy4", "種別5")]
++game.load_catalog(toys, catalog.FOODS, cats, categories)
++for i in range(300):
++    cid = "cat%04d" % i
++    game.ensure_cat(app.state, cid).update(met=True, total_time=i * 7)
++    app.state["met_order"].append(cid)
++app.state["met_order"] = [m for m in app.state["met_order"] if m.startswith("cat")]
++for m in [k for k in list(app.state["cats"]) if not k.startswith("cat")]:
++    del app.state["cats"][m]
++app.selected["cats"] = None
++app.scroll.clear()
++frame()
++n_rows = len(game.met_list(app.state)) + 1
++maxs = n_rows * N.ROW_H - 4 * N.ROW_H
++shot("13_cats_many_top")
++drag(244, 40, 108)                                          # 右端のバーをつかんで一気に下へ
++print("dex scroll:", app.scroll["cats"], "/", maxs)
++assert app.scroll["cats"] > maxs * 0.9
++frame(); shot("14_cats_many_bottom")
++click(30, row_y(n_rows - 1, 38, app.scroll["cats"]))        # いちばん下は「あと◯匹」
++assert app.selected["cats"] == N.UNMET_KEY
++settle(); frame()
++assert any("700" in line for pg_ in app.cat_pager.pages for line, _c in pg_)
++click(30, row_y(n_rows - 2, 38, app.scroll["cats"]))
++assert app.selected["cats"] == "cat0299"
++
++tab("shop")
++app.shop_kind = 0
++app.scroll.clear()
++frame()
++ids = app._shop_ids("toy")
++assert len(ids) == 600
++app.toast = None
++frame(); shot("15_shop_many_top")
++drag(244, 42, 130)
++print("shop scroll:", app.scroll["shop"])
++assert app.scroll["shop"] > 600 * N.ROW_H * 0.85 - 96
++frame(); shot("16_shop_many_bottom")
++# 種別が多いときは ◀ ▶ でめくる
++click(24 + 2 * 42 + 7, 28)                                   # ▶
++assert app.shop_cat_off == 1
++app.toast = None
++frame(); shot("17_shop_categories_paged")
++click(15, 28)                                                # ◀
++assert app.shop_cat_off == 0
++game.load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
++
++# ------------------------------------------------------------ 保存
++app.state["met_order"] = [m for m in app.state["met_order"] if m in game.CATS]
++app.state["cats"] = {k: v for k, v in app.state["cats"].items() if k in game.CATS}
++app.save()
++assert os.path.exists(os.path.join(SAVE_DIR, "save.json"))
+ print("ALL UI CHECKS PASSED")
