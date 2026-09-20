@@ -18,7 +18,7 @@ import game
 # ===== 設定 =====
 SCREEN_W = 256
 SCREEN_H = 256
-FONT_PATH = "PixelMplus12-Regular.ttf"
+FONT_PATH = "PixelMplus10-Regular.ttf" #"PixelMplus12-Regular.ttf"
 FONT_SIZE = 12
 VENDOR = "Neko-Kuroi"          # セーブ先(user_data_dir)に使う名前
 APP_NAME = "nekoatsume-pyxel"
