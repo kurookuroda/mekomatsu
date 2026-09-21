@@ -14,12 +14,20 @@
     3. アイテム種別(toy / food)を size の閾値ではなく kind で判定する
     4. 内部IDと表示名を分離した(セーブデータのキーは ID)
     5. おもちゃを庭から外したとき、遊んでいた猫はさかなを置いて帰る(元は無報酬で追い出していた)
+
+規模への備え(猫が1000匹、商品が数百種類になっても困らないように)
+    - アイテムと猫のデータは catalog.py の表にある(コードに埋め込まない)。load_catalog() で差し替えもできる
+    - セーブに入る猫の状態は「出会った猫」だけ(未発見の猫は状態を持たない)。出会った順は met_order
+    - 猫の来訪判定は、エサとおもちゃがあるときだけ行う。候補が多いときは順番をシャッフルして偏りをなくす
+    - ショップの絞り込み・並べ替えは shop_ids() にまとめた(UI は表示だけ)
 """
 
 import json
 import random
 import time
 from collections import namedtuple
+
+import catalog
 
 VERSION = 1
 
@@ -42,52 +50,62 @@ def _food(name, cost, cur, minutes, desc):
     return {"kind": "food", "name": name, "cost": cost, "cur": cur, "size": minutes, "desc": desc}
 
 
-ITEMS = {
-    "rubber_ball": _toy("ゴムボール", 5, "s", 1, "小さな明るいオレンジ色のゴムボール。ふにふにで、ピコピコ鳴るよ!"),
-    "sparkle_ball": _toy("キラキラボール", 5, "g", 1, "きらめくラメが入った、小さな透明のゴムボール!"),
-    "yarn_ball": _toy("毛糸玉", 10, "s", 1, "赤い毛糸玉だよ!"),
-    "fancy_yarn_ball": _toy("高級毛糸玉", 15, "g", 1, "赤・青・緑に銀色の糸がきらめく、高級な毛糸玉!"),
-    "tennis_ball": _toy("テニスボール", 25, "s", 1, "毛羽立った鮮やかな黄色のテニスボール!"),
-    "paper_bag": _toy("紙袋", 20, "s", 1, "スーパーの紙袋。ガサガサいい音がするよ!"),
-    "scratching_post": _toy("爪とぎポール", 5, "g", 1, "猫がバリバリ爪をとげる、いい感じのポール!"),
-    "fancy_scratching_post": _toy("高級爪とぎポール", 15, "g", 1, "硬い木と合成皮革でできた、デラックスな爪とぎポール!"),
-    "fishbowl": _toy("金魚鉢", 10, "g", 1, "かわいい金魚が泳ぐ小さな金魚鉢!"),
-    "small_condo": _toy("小型キャットハウス", 75, "s", 3, "少しだけカーペット張りの小さなキャットハウス。3匹まで入れるよ!"),
-    "medium_condo": _toy("中型キャットハウス", 150, "s", 5, "全面カーペット張りの中くらいのキャットハウス。5匹まで入れるよ!"),
-    "large_condo": _toy("大型キャットハウス", 50, "g", 6, "高級ベルベル絨毯に手縫いの仕上げ、6匹まで入れる大きなキャットハウス!"),
-    "catnip": _toy("マタタビの袋", 7, "g", 1, "小さなマタタビの袋。においで猫が大興奮!"),
-    "plain_pillow": _toy("無地のクッション", 30, "s", 1, "青くてやわらかい、小さな無地のクッション!"),
-    "tie_dye_pillow": _toy("絞り染めのクッション", 15, "g", 1, "絞り染めのフリースでできた、ふかふかの厚いクッション!"),
-    "plastic_bucket": _toy("プラスチックのバケツ", 20, "s", 1, "白い取っ手のついた小さな緑のバケツ。バケツがあるぞ!"),
-    "cereal_box": _toy("シリアルの箱", 15, "s", 1, "「シナモンとろけるゴロゴロ」の空き箱!"),
-    "fruit_box": _toy("果物の箱", 75, "s", 1, "小さな段ボールの果物箱。入れそうなら、入っちゃう!"),
-    "large_box": _toy("大きな箱", 30, "g", 4, "もとは家電が入っていた大きな段ボール箱。猫が4匹まで入れるよ!"),
-    "butterfly_toy": _toy("蝶々のおもちゃ", 15, "g", 1, "長い棒の先の糸に蝶々がぶら下がった、かわいいおもちゃ。ひらひら楽しい!"),
-    "laser_pointer": _toy("ロボットレーザーポインター", 125, "g", 1, "レーザーポインターを持った小さなロボットアーム。みんな大好き!"),
-    "rainbow_umbrella": _toy("虹色の傘", 25, "g", 5, "虹色もようの大きな傘。猫が5匹まで入れるよ!"),
-    "plain_umbrella": _toy("無地の傘", 250, "s", 4, "明るい黄色の大きな無地の傘。猫が4匹まで入れるよ!"),
-    "plush_froggy": _toy("カエルのぬいぐるみ", 75, "s", 1, "ぎゅっとすると鳴く、緑のかわいいカエルのぬいぐるみ!"),
-    "dry_food": _food("ドライフード", 10, "s", 300, "ごく普通のドライフード。カリカリでシンプルな味。"),
-    "wet_food": _food("ウェットフード缶", 2, "g", 300, "ごく普通のウェットフード。においが強烈!"),
-    "fancy_food": _food("高級フード缶", 5, "g", 300, "職人が手づくりした、フェアトレードのオーガニック猫ごはん。んー、おいしい!"),
-}
-TOYS = {k: v for k, v in ITEMS.items() if v["kind"] == "toy"}
-FOODS = {k: v for k, v in ITEMS.items() if v["kind"] == "food"}
-
-
 def _cat(name, desc, treasure, strength=5, entry_chance=0.1, time_limit=30, fav_toy="", exclusive=False):
     return {"name": name, "desc": desc, "treasure": treasure, "strength": strength,
             "entry_chance": entry_chance, "time_limit": time_limit,
             "fav_toy": fav_toy, "exclusive": exclusive}
 
 
-CATS = {
-    "gordo": _cat("ゴードー", "いつもあなたのごはんを食べにくる、いちばん手のかかる猫", "役に立たない木切れ(ゴードーだから)"),
-    "pukka": _cat("プッカ", "クリーム色のぶちがある白い短毛で、緑の目の猫。レーザーを追いかけたり、サーフィンをするのが大好き", "サーフワックスのかたまり"),
-    "peebles": _cat("ピーブルズ", "青い目の白黒の短毛猫。デスメタルとマタタビの山が好き", "べっ甲のギターピック"),
-    "tarawa": _cat("タラワ", "白い筋の入ったグレーの長毛で、灰色の目の猫。のんびりするのと、鳥を追いかけるのが好き", "アオカケスの羽根", strength=6),
-    "felix": _cat("フェリックス", "オレンジと白の短毛のトラ猫で、黄色い目。とてもおだやかで、一日中ほとんど瞑想している", "仏像のお香立て"),
-}
+# load_catalog() が埋める。他のモジュールは game.ITEMS のように、使う時に参照すること(差し替えに追従するため)
+ITEMS = {}          # アイテムID -> 仕様(おもちゃとエサ。表の並び順)
+TOYS = {}
+FOODS = {}
+IDS_BY_KIND = {}    # 種別 -> アイテムIDのリスト(表の並び順)
+CATS = {}           # 猫ID -> 仕様(表の並び順)
+CATEGORIES = []     # ショップの種別 [(種別ID, 表示名)]
+CATALOG_VERSION = 0     # load_catalog() のたびに増える(UI 側のキャッシュ無効化用)
+
+
+def load_catalog(toys, foods, cats, categories):
+    """アイテムと猫のデータ表を読み込む(既定は catalog.py)。ID の重複や不正な値は ValueError。"""
+    global ITEMS, TOYS, FOODS, IDS_BY_KIND, CATS, CATEGORIES, CATALOG_VERSION
+    items, cat_specs = {}, {}
+    for row in toys:
+        iid = row[0]
+        if iid in items:
+            raise ValueError("duplicate item id: %s" % iid)
+        items[iid] = _toy(*row[1:])
+    for row in foods:
+        iid = row[0]
+        if iid in items:
+            raise ValueError("duplicate item id: %s" % iid)
+        items[iid] = _food(*row[1:])
+    for row in cats:
+        cid, name, desc, treasure = row[:4]
+        if cid in cat_specs:
+            raise ValueError("duplicate cat id: %s" % cid)
+        cat_specs[cid] = _cat(name, desc, treasure, **(row[4] if len(row) > 4 else {}))
+    for iid, it in items.items():
+        if it["cur"] not in ("s", "g") or it["cost"] <= 0 or it["size"] < 1:
+            raise ValueError("bad item: %s" % iid)
+        if it["kind"] == "toy" and it["size"] > SPACE:
+            raise ValueError("toy does not fit in the yard: %s" % iid)
+    kinds = [k for k, _label in categories]
+    ids_by_kind = {k: [] for k in kinds}
+    for iid, it in items.items():
+        if it["kind"] not in ids_by_kind:
+            raise ValueError("item %s has no category" % iid)
+        ids_by_kind[it["kind"]].append(iid)
+    ITEMS = items
+    TOYS = {k: v for k, v in items.items() if v["kind"] == "toy"}
+    FOODS = {k: v for k, v in items.items() if v["kind"] == "food"}
+    IDS_BY_KIND = ids_by_kind
+    CATS = cat_specs
+    CATEGORIES = list(categories)
+    CATALOG_VERSION += 1
+
+
+load_catalog(catalog.TOYS, catalog.FOODS, catalog.CATS, catalog.CATEGORIES)
 
 
 def cur_name(cur):
@@ -117,7 +135,8 @@ def new_state(now=None):
         "food_stock": {},          # エサID -> 個数
         "food": "",                # 庭に出ているエサID
         "food_remaining": 0,       # 残り分(tick)
-        "cats": {cid: _new_cat() for cid in CATS},
+        "cats": {},                # 出会った猫だけ(猫ID -> 状態)。猫が何匹いても、セーブは出会った分だけで済む
+        "met_order": [],           # 出会った順(図鑑の並び)
         "pending_money": [],       # [猫ID, 量, "s"/"g"]
         "pending_treasures": [],   # 猫ID
         "last_tick": now,
@@ -131,6 +150,19 @@ def space_used(state):
 
 def occupants(state, toy_id):
     return list(state["occ"].get(toy_id, []))
+
+
+def ensure_cat(state, cid):
+    """猫の状態を返す。まだ無ければ既定値で作る(出会い済みにはしない)。"""
+    c = state["cats"].get(cid)
+    if c is None:
+        c = state["cats"][cid] = _new_cat()
+    return c
+
+
+def met_list(state):
+    """出会った猫を、出会った順に返す(図鑑の並び)。"""
+    return list(state["met_order"])
 
 
 def cats_in_yard(state):
@@ -178,23 +210,27 @@ def tick(state, rng=random, events=None):
     """1 分ぶん進める(元の update.tick と同じ順序)。"""
     ev = events if events is not None else []
     cats = state["cats"]
-    # 「庭にいない猫」は先に確定する(この tick で帰った猫は同 tick に再入場しない)
-    candidates = [cid for cid, c in cats.items() if not c["in_yard"]]
-    for cid in cats_in_yard(state):
+    # 「庭にいる猫」を先に確定する(この tick で帰った猫は同 tick に再入場しない)
+    in_yard = set(cats_in_yard(state))
+    for cid in list(in_yard):
         c = cats[cid]
         c["time_in_yard"] += 1
         if _time_to_leave(c, CATS[cid], rng):
             _leave(state, cid, rng, ev)
     if state["food"]:
-        for cid in candidates:
-            if rng.random() < CATS[cid]["entry_chance"]:
-                toy = _pick_toy(state, cid, rng)
-                if toy is None:
-                    continue
-                if len(state["occ"][toy]) < TOYS[toy]["size"]:
-                    _join(state, cid, toy, ev)
-                else:
-                    _try_push(state, cid, toy, rng, ev)
+        if state["yard"]:                      # おもちゃが無ければ、誰も来ないので判定しない
+            candidates = [cid for cid in CATS if cid not in in_yard]
+            if len(candidates) > 8:            # 猫が多いとき、先頭の猫ばかり席を取らないように順番を混ぜる
+                rng.shuffle(candidates)
+            for cid in candidates:
+                if rng.random() < CATS[cid]["entry_chance"]:
+                    toy = _pick_toy(state, cid, rng)
+                    if toy is None:
+                        continue
+                    if len(state["occ"][toy]) < TOYS[toy]["size"]:
+                        _join(state, cid, toy, ev)
+                    else:
+                        _try_push(state, cid, toy, rng, ev)
         _reduce_food(state, ev)
 
 
@@ -215,11 +251,14 @@ def _pick_toy(state, cid, rng):
 
 
 def _join(state, cid, toy, events):
-    c = state["cats"][cid]
+    c = ensure_cat(state, cid)
     state["occ"][toy].append(cid)
     c["in_yard"] = True
     c["toy"] = toy
-    c["met"] = True
+    if not c["met"]:                       # 図鑑での位置は「はじめて庭に来た順」で、このとき決まる
+        c["met"] = True
+        state["met_order"].append(cid)
+        events.append(("met", cid))
     events.append(("arrive", cid, toy))
     if c["total_time"] > TREASURE_MINUTES and not c["given_treasure"]:
         c["given_treasure"] = True
@@ -331,6 +370,38 @@ def set_food(state, food_id, force=False):
     return Result(True, "ok", "{0}を置きました(残り{1}分)".format(FOODS[food_id]["name"], state["food_remaining"]))
 
 
+SHOP_FILTERS = (("all", "すべて"), ("buyable", "買える"), ("unowned", "未所持"))
+SHOP_SORTS = (("catalog", "標準"), ("price_asc", "安い順"), ("price_desc", "高い順"))
+
+
+def shop_ids(state, kind=None, filt="all", sort="catalog"):
+    """ショップに並べるアイテムIDを、絞り込み・並べ替え済みで返す。
+    kind: 種別ID(おもちゃ / エサ など)。None なら、すべての種別をまとめて表の順で返す
+    filt: all=すべて / buyable=いま買える(所持金が足り、持っていない) / unowned=持っていない
+    sort: catalog=表の順 / price_asc=安い順 / price_desc=高い順(銀→金の順に、値段で比べる)
+    """
+    ids = list(ITEMS) if kind is None else list(IDS_BY_KIND.get(kind, []))
+    if filt != "all":
+        owned = set(state["owned_toys"])
+        stock = state["food_stock"]
+
+        def is_toy(i):
+            return ITEMS[i]["kind"] == "toy"
+
+        def have(i):
+            return (i in owned) if is_toy(i) else stock.get(i, 0) > 0
+
+        if filt == "unowned":
+            ids = [i for i in ids if not have(i)]
+        elif filt == "buyable":
+            ids = [i for i in ids
+                   if not (is_toy(i) and have(i)) and state[ITEMS[i]["cur"] + "_fish"] >= ITEMS[i]["cost"]]
+    if sort in ("price_asc", "price_desc"):
+        ids.sort(key=lambda i: (0 if ITEMS[i]["cur"] == "s" else 1, ITEMS[i]["cost"]),
+                 reverse=(sort == "price_desc"))
+    return ids
+
+
 def collect(state):
     """猫たちが置いていったさかなを受け取る。[(猫ID, 量, 通貨)] を返す。"""
     got = [tuple(m) for m in state["pending_money"]]
@@ -413,19 +484,26 @@ def _sanitize(state, raw):
     saved_cats = state["cats"] if isinstance(state["cats"], dict) else {}
     saved_occ = state["occ"] if isinstance(state["occ"], dict) else {}
     cats = {}
-    for cid in CATS:
+    for cid, src in saved_cats.items():
+        if cid not in CATS or not isinstance(src, dict):
+            continue
         c = _new_cat()
-        src = saved_cats.get(cid, {})
-        if isinstance(src, dict):
-            c["in_yard"] = bool(src.get("in_yard", False))
-            c["toy"] = src.get("toy", "") if isinstance(src.get("toy", ""), str) else ""
-            c["time_in_yard"] = _int(src.get("time_in_yard", 0))
-            c["total_time"] = _int(src.get("total_time", 0))
-            c["given_treasure"] = bool(src.get("given_treasure", False))
-            # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
-            c["met"] = bool(src.get("met", False)) or c["in_yard"] \
-                or c["total_time"] > 0 or c["given_treasure"]
-        cats[cid] = c
+        c["in_yard"] = bool(src.get("in_yard", False))
+        c["toy"] = src.get("toy", "") if isinstance(src.get("toy", ""), str) else ""
+        c["time_in_yard"] = _int(src.get("time_in_yard", 0))
+        c["total_time"] = _int(src.get("total_time", 0))
+        c["given_treasure"] = bool(src.get("given_treasure", False))
+        # met が無い旧セーブでも、遊んだ形跡があれば「出会い済み」扱いにする
+        c["met"] = bool(src.get("met", False)) or c["in_yard"] \
+            or c["total_time"] > 0 or c["given_treasure"]
+        if c["met"]:                       # 出会っていない猫の状態は持たない(旧セーブの全員分の既定値は捨てる)
+            cats[cid] = c
+    met_order = []
+    for cid in (state["met_order"] if isinstance(state["met_order"], list) else []):
+        if cid in cats and cid not in met_order:
+            met_order.append(cid)
+    met_order.extend(cid for cid in cats if cid not in met_order)   # 順番が不明な旧セーブ分は、後ろに足す
+    state["met_order"] = met_order
     occ = {t: [] for t in yard}
     order = []
     for t in yard:
