@@ -374,28 +374,24 @@ SHOP_FILTERS = (("all", "すべて"), ("buyable", "買える"), ("unowned", "未
 SHOP_SORTS = (("catalog", "標準"), ("price_asc", "安い順"), ("price_desc", "高い順"))
 
 
-def shop_ids(state, kind=None, filt="all", sort="catalog"):
+def shop_ids(state, kind, filt="all", sort="catalog"):
     """ショップに並べるアイテムIDを、絞り込み・並べ替え済みで返す。
-    kind: 種別ID(おもちゃ / エサ など)。None なら、すべての種別をまとめて表の順で返す
     filt: all=すべて / buyable=いま買える(所持金が足り、持っていない) / unowned=持っていない
     sort: catalog=表の順 / price_asc=安い順 / price_desc=高い順(銀→金の順に、値段で比べる)
     """
-    ids = list(ITEMS) if kind is None else list(IDS_BY_KIND.get(kind, []))
+    ids = list(IDS_BY_KIND.get(kind, []))
     if filt != "all":
         owned = set(state["owned_toys"])
         stock = state["food_stock"]
 
-        def is_toy(i):
-            return ITEMS[i]["kind"] == "toy"
-
         def have(i):
-            return (i in owned) if is_toy(i) else stock.get(i, 0) > 0
+            return (i in owned) if kind == "toy" else stock.get(i, 0) > 0
 
         if filt == "unowned":
             ids = [i for i in ids if not have(i)]
         elif filt == "buyable":
             ids = [i for i in ids
-                   if not (is_toy(i) and have(i)) and state[ITEMS[i]["cur"] + "_fish"] >= ITEMS[i]["cost"]]
+                   if not (kind == "toy" and have(i)) and state[ITEMS[i]["cur"] + "_fish"] >= ITEMS[i]["cost"]]
     if sort in ("price_asc", "price_desc"):
         ids.sort(key=lambda i: (0 if ITEMS[i]["cur"] == "s" else 1, ITEMS[i]["cost"]),
                  reverse=(sort == "price_desc"))

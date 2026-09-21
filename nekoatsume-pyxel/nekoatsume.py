@@ -45,13 +45,7 @@ BAR_W = 6                      # 見た目の幅
 BAR_HIT_W = 10                 # つかめる幅(右端のこの幅を触るとバーの操作になる)
 ROW_RIGHT = SCREEN_W - 20      # リスト行の右側の文字の右端(バーと重ならない位置)
 
-# ショップ: 商品の説明は、選んだときだけ下に開く(閉じているあいだ、一覧が画面いっぱいに使える)
-SHOP_TOP = HEADER_H + 22       # 一覧の上端(種別タブ・絞り込みの下)
-SHOP_HEAD_H = 20               # 説明パネルの見出し行(値段・名前・買う・×)の高さ
-SHOP_DESC_LINES = 3            # 説明パネルに出す説明の行数の上限(これより長い説明はページに分かれる)
-SHOP_CLOSE_X = SCREEN_W - 8 - 4 - 22       # 閉じるボタン(幅22)
-SHOP_BUY_X = SHOP_CLOSE_X - 4 - 48         # 買うボタン(幅48)
-
+UNMET_KEY = "?unmet"           # 図鑑の「まだ出会っていない猫」の行
 
 # パレット(Pyxel 標準 16 色)
 C_BG, C_PANEL, C_TEXT, C_SUB, C_DIM = 0, 1, 7, 6, 13
@@ -70,9 +64,9 @@ HELP_LINES = [
     "エサは300分(5時間)でなくなります。アプリを閉じている間も時間は進みます。",
     "エサがないと、猫は来ません。",
     "",
-    "猫が、お宝を持ってくることがあります。",
+    "猫の累計滞在が3000分を超えると、お宝を持ってくることがあります。",
     "",
-    "文章が長いときは、右下で ▼ が点滅します。画面をタップすると次のページへ、左下の ◀ をタップすると前のページへ戻れます。",
+    "文章が長いときは、右下で ▼ が点滅します。画面をタップすると、次のページに進みます。",
     "猫やアイテムが増えても、リストの右端(バー)をドラッグすれば、すばやく動かせます。",
 ]
 
@@ -165,8 +159,6 @@ class PagedText:
         self.tw = Typewriter()
         self.w = 0
         self.h = 0
-        self.seen = -1             # 表示したページの最大番号(いちど出したページは、戻ったとき/進み直すとき、すぐ全部出す)
-        self.back_rect = None      # 「◀」(前のページへ)のタップ範囲。直前の描画で決まる(x, y, w, h)
 
     def set(self, key, blocks, wrap, w, h, group=None):
         """blocks は [(文章, 色), ...]。w, h は枠の大きさ。group が同じなら、ページと表示済みの状態を引き継ぐ。"""
@@ -192,14 +184,9 @@ class PagedText:
             pages.append(cur)
         self.pages = pages
         self.page = min(self.page, len(pages) - 1) if keep else 0
-        if not keep:
-            self.seen = -1
         self._start_page(skip=keep)
 
     def _start_page(self, skip=False):
-        if self.page <= self.seen:                        # いちど読んだページは、すぐ全部出す
-            skip = True
-        self.seen = max(self.seen, self.page)
         self.tw.text = None                               # 同じ文でも、最初から出し直す
         self.tw.set_text("\n".join(line for line, _c in self.pages[self.page]))
         if skip:
@@ -212,15 +199,6 @@ class PagedText:
     @property
     def has_next(self):
         return self.page < len(self.pages) - 1
-
-    @property
-    def has_prev(self):
-        return self.page > 0
-
-    def prev_page(self):
-        if self.has_prev:
-            self.page -= 1
-            self._start_page(skip=True)                   # 戻ったときは、はじめから全部出しておく
 
     def skip(self):
         self.tw.skip()
@@ -250,14 +228,8 @@ class PagedText:
             if i < len(cols):
                 app.tx(x + PAD_X, y + PAD_Y + i * LINE_H, line, cols[i])
         base = y + self.h - PAD_Y
-        self.back_rect = None
         if len(self.pages) > 1:
-            # 左下: 「◀ 2/3」。◀ は2ページ目以降に出る(押すと前のページへ)。ページ番号の位置はどのページでも同じ
-            if self.has_prev:
-                ax, ay = x + PAD_X, base - 10
-                pyxel.tri(ax + 6, ay, ax + 6, ay + 8, ax, ay + 4, C_ACCENT)
-                self.back_rect = (x, base - FONT_SIZE - 4, PAD_X + 24, FONT_SIZE + 8)   # 指でも押しやすい大きさ
-            app.tx(x + PAD_X + 14, base - FONT_SIZE, "{0}/{1}".format(self.page + 1, len(self.pages)), C_DIM)
+            app.tx(x + PAD_X, base - FONT_SIZE, "{0}/{1}".format(self.page + 1, len(self.pages)), C_DIM)
         if self.tw.done and self.has_next and (pyxel.frame_count // 12) % 2 == 0:
             cx = x + self.w - PAD_X - 8
             pyxel.tri(cx, base - 9, cx + 7, base - 9, cx + 3, base - 3, C_ACCENT)   # 逆三角(▼)の点滅
@@ -272,7 +244,7 @@ class App:
 
         # 画面の状態
         self.screen = "yard"
-        self.sub = {"bag": None}               # もちものの種別タブ。None=何も押していない(すべて) 0=おもちゃ 1=エサ
+        self.sub = {"shop": 0, "bag": 0}       # 0=おもちゃ 1=エサ
         self.selected = {"shop": None, "cats": None}
         self.scroll = {}
         self.log = []                          # [{"full": 折り返し済みテキスト, "revealed": int}]
@@ -289,13 +261,11 @@ class App:
         self.areas = []
         self.press = None
         # ショップの表示条件(種別・絞り込み・並べ替え)
-        self.shop_kind = None                  # None=何も押していない(すべての商品)。押すとその種別だけになる
+        self.shop_kind = 0
         self.shop_cat_off = 0                  # 種別タブが多いとき、先頭に出す種別の番号
         self.shop_filter = 0
         self.shop_sort = 0
-        self._shop_cache = (None, [], {})      # (条件, 商品ID, 商品ID→行番号)
-        self._shop_reveal = None               # 説明を開いた商品(一覧が狭くなったとき、見える位置へ寄せる)
-        self.shop_panel_y = None               # 説明パネルの上端(閉じているとき None)。説明の長さに合わせて高さが決まる
+        self._shop_cache = (None, [])
         self._init_sound()
 
         self._init_save()
@@ -472,8 +442,7 @@ class App:
         """キーボード入力(押した瞬間の集合)。テストでは差し替える。"""
         keys = set()
         for name in ("KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5", "KEY_UP", "KEY_DOWN",
-                     "KEY_PAGEUP", "KEY_PAGEDOWN", "KEY_HOME", "KEY_END", "KEY_RETURN", "KEY_SPACE",
-                     "KEY_LEFT", "KEY_RIGHT", "KEY_BACKSPACE"):
+                     "KEY_PAGEUP", "KEY_PAGEDOWN", "KEY_HOME", "KEY_END", "KEY_RETURN", "KEY_SPACE"):
             if hasattr(pyxel, name) and pyxel.btnp(getattr(pyxel, name)):
                 keys.add(name)
         return keys
@@ -526,18 +495,14 @@ class App:
 
         keys = self._keys()
         if self.message:
-            if keys & {"KEY_RETURN", "KEY_SPACE", "KEY_RIGHT"}:
+            if keys & {"KEY_RETURN", "KEY_SPACE"}:
                 self._advance_message()
-            elif keys & {"KEY_LEFT", "KEY_BACKSPACE"}:
-                self.message["pager"].prev_page()
             return
         for i, (name, _label) in enumerate(TABS):
             if "KEY_%d" % (i + 1) in keys:
                 self.goto(name)
-        if keys & {"KEY_RETURN", "KEY_SPACE", "KEY_RIGHT"}:
+        if keys & {"KEY_RETURN", "KEY_SPACE"}:
             self._advance_key()
-        if keys & {"KEY_LEFT", "KEY_BACKSPACE"}:
-            self._back_key()
         if self.areas:
             area = self.areas[0]
             page = max(1, area[4] // ROW_H) * ROW_H
@@ -546,20 +511,8 @@ class App:
                 if name in keys:
                     self._scroll_by(area, dy)
 
-    def _back_rect_hit(self, x, y):
-        """「◀」(前のページへ)がタップされたなら、そのページ送りを返す。"""
-        for pager in reversed(self._visible_pagers()):
-            r = pager.back_rect
-            if r and pager.has_prev and r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]:
-                return pager
-        return None
-
     def _on_tap(self, x, y):
-        """タップの振り分け。◀(前のページ) > 長いメッセージ > 文字送り中(全部出す) > ページ送りの枠(次のページ) > ふつうのボタン"""
-        back = self._back_rect_hit(x, y)
-        if back:
-            back.prev_page()
-            return
+        """タップの振り分け。長いメッセージ > 文字送り中(全部出す) > ページ送りの枠(次のページ) > ふつうのボタン"""
         if self.message:
             self._advance_message()
             return
@@ -571,13 +524,6 @@ class App:
                 pager.next_page()
                 return
         self.tap(x, y)
-
-    def _back_key(self):
-        """←キー / Backspace: 前のページへ。"""
-        for pager in reversed(self._visible_pagers()):
-            if pager.has_prev:
-                pager.prev_page()
-                return
 
     def _advance_key(self):
         """Enter / Space: タップと同じ(位置は問わない)。"""
@@ -815,12 +761,12 @@ class App:
 
     # ---- ショップ
     def sub_tabs(self, screen, y=20):
-        """もちものの種別タブ。最初は何も押されていない(=すべて表示)。押したタブをもう一度押すと解除される。"""
         for i, label in enumerate(("おもちゃ", "エサ")):
             self.button(8 + i * 68, y, 64, 16, label, lambda i=i: self.set_sub(screen, i), active=(self.sub[screen] == i))
 
     def set_sub(self, screen, i):
-        self.sub[screen] = None if self.sub[screen] == i else i
+        self.sub[screen] = i
+        self.scroll.pop(screen, None)
         self.selected[screen] = None
 
     def arrow_button(self, x, y, w, h, direction, fn, enabled=True):
@@ -833,17 +779,8 @@ class App:
         else:
             pyxel.tri(cx - 2, cy - 4, cx - 2, cy + 4, cx + 3, cy, col)
 
-    def close_button(self, x, y, w, h, fn):
-        """× のボタン(線を自分で描く)。"""
-        self.button(x, y, w, h, "", fn)
-        cx, cy = x + w // 2, y + h // 2
-        for dx in (0, 1):
-            pyxel.line(cx - 4 + dx, cy - 4, cx + 4 + dx, cy + 4, C_TEXT)
-            pyxel.line(cx - 4 + dx, cy + 4, cx + 4 + dx, cy - 4, C_TEXT)
-
     def _shop_set_kind(self, i):
-        """種別タブ。押すとその種別だけを表示し、押されているタブをもう一度押すと解除(すべて表示)に戻る。"""
-        self.shop_kind = None if self.shop_kind == i else i
+        self.shop_kind = i
         self.scroll.pop("shop", None)
 
     def _shop_page_kinds(self, d):
@@ -861,8 +798,7 @@ class App:
         """種別タブ(種別が3つ以上なら ◀ ▶ でめくる)と、絞り込み・並べ替えのボタン。"""
         cats = game.CATEGORIES
         n = len(cats)
-        if self.shop_kind is not None and self.shop_kind >= n:
-            self.shop_kind = None
+        self.shop_kind = min(self.shop_kind, n - 1)
         y, h = 20, 16
         if n <= 2:
             slots, x0, w = list(range(n)), 8, 52
@@ -888,100 +824,61 @@ class App:
         key = (game.CATALOG_VERSION, kind, filt, sort, s["s_fish"], s["g_fish"],
                len(s["owned_toys"]), sum(s["food_stock"].values()))
         if self._shop_cache[0] != key:
-            ids = game.shop_ids(s, kind, filt, sort)
-            self._shop_cache = (key, ids, {item_id: i for i, item_id in enumerate(ids)})
+            self._shop_cache = (key, game.shop_ids(s, kind, filt, sort))
         return self._shop_cache[1]
 
     def draw_shop(self):
-        """最初は、種別タブも商品も何も選ばれていない状態(すべての商品が一覧で見える)。
-        商品をタップすると、その説明が下に開く。閉じるか、同じ商品をもう一度タップすると閉じて、一覧が広くなる。"""
         s = self.state
         self._shop_strip()
-        kind = game.CATEGORIES[self.shop_kind][0] if self.shop_kind is not None else None
+        kind = game.CATEGORIES[self.shop_kind][0]
         ids = self._shop_ids(kind)
-        index = self._shop_cache[2]
         owned_set = set(s["owned_toys"])
-
-        sel = self.selected["shop"]
-        if sel is not None and sel not in index:          # 条件を変えて一覧から消えた商品の説明は、閉じる
-            sel = self.selected["shop"] = None
-        if sel is not None:
-            # 説明パネルの高さは、説明の長さに合わせる(短い説明なら小さく、長いなら最大 SHOP_DESC_LINES 行+ページ送り)
-            info = self._shop_info(sel)
-            n_lines = len(self.wrap(info, SCREEN_W - 16 - 2 * PAD_X - FONT_SIZE))
-            th = 2 * PAD_Y + CURSOR_H + min(n_lines, SHOP_DESC_LINES) * LINE_H
-            panel_h = SHOP_HEAD_H + th
-            panel_y = TAB_Y - 4 - panel_h
-        else:
-            panel_y = panel_h = None
-        self.shop_panel_y = panel_y
-        list_bottom = panel_y - 4 if sel is not None else TAB_Y - 4
-        list_h = list_bottom - SHOP_TOP
-        if sel is not None and self._shop_reveal == sel:   # 説明が開いて一覧が狭くなったぶん、選んだ行が見える位置へ寄せる
-            top = index[sel] * ROW_H
-            off = self.scroll.get("shop", 0)
-            if top < off:
-                off = top
-            elif top + ROW_H > off + list_h:
-                off = top + ROW_H - list_h
-            self.scroll["shop"] = off
-        self._shop_reveal = None
 
         def row(i, ry, clip):
             item_id = ids[i]
             it = game.ITEMS[item_id]
             if self.selected["shop"] == item_id:
                 pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
-            owned = it["kind"] == "toy" and item_id in owned_set
+            owned = kind == "toy" and item_id in owned_set
             self.tx(12, ry + 2, it["name"], C_DIM if owned else C_TEXT)
             if owned:
                 self.tx_right(ROW_RIGHT, ry + 2, "もっている", C_DIM)
             else:
                 afford = s[it["cur"] + "_fish"] >= it["cost"]
                 self.tx_right(ROW_RIGHT, ry + 2, game.price_text(item_id), C_SUB if afford else C_BAD)
-            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select_shop(item_id), clip)
+            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("shop", item_id), clip)
 
+        list_h = 96
         if not ids:
-            self.tx(12, SHOP_TOP + 6, "条件に合う商品はありません", C_SUB)
-        self.list_view("shop", 8, SHOP_TOP, SCREEN_W - 16, list_h, len(ids), row)
+            self.tx(12, 46, "条件に合う商品はありません", C_SUB)
+        self.list_view("shop", 8, 40, SCREEN_W - 16, list_h, len(ids), row)
 
-        if sel is None:
-            return
-        it = game.ITEMS[sel]
+        sel = self.selected["shop"]
+        panel_y = 40 + list_h + 4
+        panel_h = TAB_Y - 4 - panel_y
         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
-        # 見出し: 値段と名前。長い名前は「…」で省く(全文は、上の一覧の選択行に出ている)
-        self.tx(14, panel_y + 5, self.fit("{0}  {1}".format(game.price_text(sel), it["name"]), SHOP_BUY_X - 14 - 6), C_ACCENT)
-        owned = it["kind"] == "toy" and sel in owned_set
-        self.button(SHOP_BUY_X, panel_y + 2, 48, 16, "買う", self.do_buy, enabled=not owned)
-        self.close_button(SHOP_CLOSE_X, panel_y + 2, 22, 16, self.close_shop_panel)
-        ty = panel_y + SHOP_HEAD_H                         # 説明の枠: 見出しの下から、パネルの下端まで
-        self.shop_pager.set(("shop", sel), [(info, C_TEXT)], self.wrap, SCREEN_W - 16, th)
-        self.shop_pager.draw(self, 8, ty)
-        self.pager_regs.append((self.shop_pager, 8, ty, SCREEN_W - 16, th))
+        if sel in game.ITEMS:
+            it = game.ITEMS[sel]
+            self.tx(14, panel_y + 4, "{0}  {1}".format(it["name"], game.price_text(sel)), C_ACCENT)
+            info = it["desc"]
+            if it["kind"] == "toy" and it["size"] > 1:
+                info += "(庭を{0}マス使う)".format(it["size"])
+            if it["kind"] == "food":
+                info += "(約{0}分もつ)".format(it["size"])
+            # 説明の枠: 見出しの下から、パネルの下端まで。長い説明はページに分かれる
+            ty = panel_y + 4 + LINE_H
+            th = panel_y + panel_h - ty
+            self.shop_pager.set(("shop", sel), [(info, C_TEXT)], self.wrap, SCREEN_W - 16, th, group=None)
+            self.shop_pager.draw(self, 8, ty)
+            self.pager_regs.append((self.shop_pager, 8, ty, SCREEN_W - 16, th))
+            owned = it["kind"] == "toy" and sel in owned_set
+            self.button(SCREEN_W - 66, panel_y + 2, 52, 16, "買う", self.do_buy, enabled=not owned)
+        else:
+            self.tx(14, panel_y + 6, "商品をタップすると説明が出ます", C_SUB)
+            self.tx(14, panel_y + 6 + LINE_H, "({0}件)".format(len(ids)), C_DIM)
 
     def select(self, screen, item_id):
         self.selected[screen] = item_id
-
-    def _shop_info(self, item_id):
-        """商品の説明文(庭を使うマス数・エサのもつ時間を添える)。"""
-        it = game.ITEMS[item_id]
-        info = it["desc"]
-        if it["kind"] == "toy" and it["size"] > 1:
-            info += "(庭を{0}マス使う)".format(it["size"])
-        if it["kind"] == "food":
-            info += "(約{0}分もつ)".format(it["size"])
-        return info
-
-    def select_shop(self, item_id):
-        """商品をタップ: 説明を開く。開いている商品をもう一度タップすると閉じる。"""
-        if self.selected["shop"] == item_id:
-            self.close_shop_panel()
-        else:
-            self.selected["shop"] = item_id
-            self._shop_reveal = item_id
-
-    def close_shop_panel(self):
-        self.selected["shop"] = None
 
     def do_buy(self):
         sel = self.selected["shop"]
@@ -998,15 +895,12 @@ class App:
         self.sub_tabs("bag")
         self.tx_right(SCREEN_W - 8, 22, "庭 {0}/{1}マス".format(game.space_used(s), game.SPACE), C_SUB)
 
-        sub = self.sub["bag"]
-        toys = list(s["owned_toys"])
-        foods = [f for f in game.FOODS if s["food_stock"].get(f, 0) > 0]
-        if sub == 0:
-            ids, empty = toys, "おもちゃを持っていません。ショップで買おう"
-        elif sub == 1:
-            ids, empty = foods, "エサを持っていません。ショップで買おう"
-        else:                                              # 何も押していない: 持っているものぜんぶ(おもちゃ→エサ)
-            ids, empty = toys + foods, "まだ何も持っていません。ショップで買おう"
+        if self.sub["bag"] == 0:
+            ids = list(s["owned_toys"])
+            empty = "おもちゃを持っていません。ショップで買おう"
+        else:
+            ids = [f for f in game.FOODS if s["food_stock"].get(f, 0) > 0]
+            empty = "エサを持っていません。ショップで買おう"
 
         if not ids:
             self.tx(12, 46, empty, C_SUB)
@@ -1026,7 +920,7 @@ class App:
                 fn = (lambda f=item_id: self.do_set_food(f))
             self.hit(8, ry, SCREEN_W - 16, ROW_H, fn, clip)
 
-        self.list_view("bag-" + str(self.sub["bag"]), 8, 40, SCREEN_W - 16, 150, len(ids), row)
+        self.list_view("bag" + str(self.sub["bag"]), 8, 40, SCREEN_W - 16, 150, len(ids), row)
 
         self.draw_panel(8, 196, SCREEN_W - 16, 28)
         if s["food"]:
@@ -1062,36 +956,50 @@ class App:
     # ---- おたから(猫の図鑑)
     def draw_cats(self):
         """図鑑は「出会った順」に並ぶ。猫がはじめて庭に来たときに、その順番の位置が決まる。
-        まだ出会っていない猫の数や、全部で何匹いるかは出さない(出会いの楽しみを取っておくため)。"""
+        未発見の猫は1行(あと◯匹)にまとめるので、猫が何匹いても一覧は長くならない。"""
         s = self.state
         met = game.met_list(s)
+        total = len(game.CATS)
+        unmet = total - len(met)
+        n_rows = len(met) + (1 if unmet > 0 else 0)
+        self.tx(8, 22, "出会った猫 {0}/{1}".format(len(met), total), C_SUB)
 
         def row(i, ry, clip):
-            cid = met[i]
-            c = s["cats"][cid]
-            if self.selected["cats"] == cid:
-                pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
-            self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + game.CATS[cid]["name"], C_TEXT)
-            self.tx_right(ROW_RIGHT, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
-            self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
+            if i < len(met):
+                cid = met[i]
+                c = s["cats"][cid]
+                if self.selected["cats"] == cid:
+                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+                self.tx(12, ry + 2, ("★ " if c["given_treasure"] else "") + game.CATS[cid]["name"], C_TEXT)
+                self.tx_right(ROW_RIGHT, ry + 2, "計{0}分".format(c["total_time"] + c["time_in_yard"]), C_SUB)
+                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda cid=cid: self.select("cats", cid), clip)
+            else:
+                if self.selected["cats"] == UNMET_KEY:
+                    pyxel.rect(8, ry, SCREEN_W - 16, ROW_H, C_PANEL)
+                self.tx(12, ry + 2, "？？？", C_DIM)
+                self.tx_right(ROW_RIGHT, ry + 2, "あと{0}匹".format(unmet), C_DIM)
+                self.hit(8, ry, SCREEN_W - 16, ROW_H, lambda: self.select("cats", UNMET_KEY), clip)
 
-        list_y, list_h = HEADER_H + 6, 4 * ROW_H          # 4行分。プロフィールを6行まで1ページに収めるため
-        if not met:
-            self.tx(12, list_y + 4, "猫が遊びに来ると、ここに載ります", C_SUB)
-        self.list_view("cats", 8, list_y, SCREEN_W - 16, list_h, len(met), row)
+        list_h = 4 * ROW_H
+        self.list_view("cats", 8, 38, SCREEN_W - 16, list_h, n_rows, row)
 
-        panel_y = list_y + list_h + 6
+        panel_y = 38 + list_h + 6
         panel_h = TAB_Y - 4 - panel_y
         self.draw_panel(8, panel_y, SCREEN_W - 16, panel_h)
         sel = self.selected["cats"]
-        if sel in s["cats"] and s["cats"][sel]["met"]:
+        if sel == UNMET_KEY and unmet > 0:
+            blocks = [("？？？", C_DIM),
+                      ("まだ出会っていない猫が、あと{0}匹いる。庭に遊びに来ると、ここに載るよ。".format(unmet), C_TEXT)]
+            self.cat_pager.set(("unmet", unmet), blocks, self.wrap, SCREEN_W - 16, panel_h, group="unmet")
+        elif sel in s["cats"] and s["cats"][sel]["met"]:
             c = s["cats"][sel]
             key = ("cat", sel, c["given_treasure"], c["in_yard"], c["toy"])
             self.cat_pager.set(key, self._cat_blocks(sel), self.wrap, SCREEN_W - 16, panel_h, group=sel)
-            self.cat_pager.draw(self, 8, panel_y)
-            self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
         else:
-            self.tx(14, panel_y + 6, "猫をタップしてね" if met else "庭にエサとおもちゃを置いてみよう", C_SUB)
+            self.tx(14, panel_y + 6, "猫をタップしてね", C_SUB)
+            return
+        self.cat_pager.draw(self, 8, panel_y)
+        self.pager_regs.append((self.cat_pager, 8, panel_y, SCREEN_W - 16, panel_h))
 
     def _cat_blocks(self, cid):
         """プロフィールの中身。伏せ字(まだ明かされていないお宝)は、本当の文と同じ長さの「？」で組む。

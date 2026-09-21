@@ -407,18 +407,3 @@ def test_big_catalog_shop_is_cheap_to_query(big_catalog):
     for _ in range(200):
         game.shop_ids(s, "toy", "buyable", "price_asc")
     assert _t.perf_counter() - t0 < 1.0
-
-
-def test_shop_ids_without_kind_lists_everything():
-    s = fresh()
-    assert game.shop_ids(s) == list(game.ITEMS)                       # 何も選んでいない(=すべて)
-    assert game.shop_ids(s, None, "all", "catalog") == list(game.TOYS) + list(game.FOODS)
-    game.buy(s, "rubber_ball")
-    game.buy(s, "dry_food")
-    unowned = game.shop_ids(s, None, "unowned")
-    assert "rubber_ball" not in unowned and "dry_food" not in unowned and "yarn_ball" in unowned
-    buyable = game.shop_ids(s, None, "buyable")
-    assert "rubber_ball" not in buyable and "dry_food" in buyable and "laser_pointer" not in buyable
-    asc = game.shop_ids(s, None, sort="price_asc")
-    keys = [(0 if game.ITEMS[i]["cur"] == "s" else 1, game.ITEMS[i]["cost"]) for i in asc]
-    assert keys == sorted(keys) and set(asc) == set(game.ITEMS)
